@@ -215,8 +215,6 @@ Public results from OHDSI network studies.
 
 **Live demo**
 
-:::
-
 ## DiagnosticsExplorer
 
 ![](images/characterization/diagnostics-explorer-incidence.png){fig-align="center" height="420"}
