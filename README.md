@@ -7,6 +7,8 @@ Slides and companion notebooks for the BIDS bootcamp talks. Each talk has a slid
 | Date | Talk | Slides | Notebook |
 |---|---|---|---|
 | October 5, 2026 | Data Characterization & Visualization | `2026-10-05-characterization-visualization.html` | `characterization-notebook.qmd` ([rendered](characterization-notebook.html)) |
+| October 7, 2026 | REACH and RStudio: PS and Survival Analysis | `2026-10-07-reach-ps-survival.html` | To come |
+| October 9, 2026 | Advanced Cohort Analysis: Estimation | `2026-10-09-advanced-cohort-estimation.html` | To come |
 
 Open the slides and the rendered notebooks in a browser.
 

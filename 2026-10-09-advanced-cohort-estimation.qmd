@@ -1,0 +1,11 @@
+---
+title: "Advanced Cohort Analysis: Estimation"
+subtitle: "Propensity scores and study diagnostics"
+author: "Erik Westlund"
+date: "2026-10-09"
+footer: "BIDS Bootcamp · Advanced Cohort Analysis"
+---
+
+<!-- Outline to come. -->
+
+## Questions?

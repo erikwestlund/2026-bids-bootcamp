@@ -1,0 +1,11 @@
+---
+title: "REACH and RStudio: PS and Survival Analysis"
+subtitle: "Study designs, outcome models, and running them with Strategus"
+author: "Erik Westlund"
+date: "2026-10-07"
+footer: "BIDS Bootcamp · REACH and RStudio"
+---
+
+<!-- Outline to come. -->
+
+## Questions?
