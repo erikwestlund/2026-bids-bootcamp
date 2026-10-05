@@ -37,19 +37,17 @@ Each figure is shown below and also saved as a PNG in
 
 ## Packages
 
-The HADES packages come from the OHDSI GitHub organization. Install them once
-before running this notebook:
-
-```r
-install.packages(c("remotes", "dplyr", "tidyr", "ggplot2", "patchwork", "ragg", "scales"))
-remotes::install_github("OHDSI/Eunomia")
-remotes::install_github("OHDSI/DatabaseConnector")
-remotes::install_github("OHDSI/FeatureExtraction")
-remotes::install_github("OHDSI/CohortIncidence")
-```
+The HADES packages come from the OHDSI GitHub organization. Before running this
+notebook for the first time, uncomment the install lines and run them once.
 
 ```{r}
 #| label: packages
+# install.packages(c("remotes", "dplyr", "tidyr", "ggplot2", "patchwork", "ragg", "scales"))
+# remotes::install_github("OHDSI/Eunomia")
+# remotes::install_github("OHDSI/DatabaseConnector")
+# remotes::install_github("OHDSI/FeatureExtraction")
+# remotes::install_github("OHDSI/CohortIncidence")
+
 library(dplyr)
 library(tidyr)
 library(ggplot2)
