@@ -1,0 +1,869 @@
+---
+title: "Data Characterization & Visualization: Companion Notebook"
+author: "Erik Westlund"
+date: "2026-10-05"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    code-tools: true
+    embed-resources: true
+    fig-width: 10
+    fig-height: 5.6
+execute:
+  eval: true
+  echo: true
+  warning: false
+  message: false
+---
+
+This notebook reproduces every data result and figure in the BIDS bootcamp
+talk *Data Characterization & Visualization*, from start to finish. It uses
+**Eunomia**, a small synthetic OMOP CDM database that runs entirely on your
+own computer, so you can run it without access to any real data.
+
+The notebook has two parts:
+
+1. **Characterization.** Connect to Eunomia, build the cohorts, and run the
+   HADES packages (FeatureExtraction and CohortIncidence) plus a few SQL
+   queries.
+2. **Visualization.** Turn those results into the figures shown in the talk
+   with ggplot2.
+
+Each figure is shown below and also saved as a PNG in
+`images/characterization/`, which is where the slides read them from.
+
+# Setup
+
+## Packages
+
+The HADES packages come from the OHDSI GitHub organization. Install them once
+before running this notebook:
+
+```r
+install.packages(c("remotes", "dplyr", "tidyr", "ggplot2", "patchwork", "ragg", "scales"))
+remotes::install_github("OHDSI/Eunomia")
+remotes::install_github("OHDSI/DatabaseConnector")
+remotes::install_github("OHDSI/FeatureExtraction")
+remotes::install_github("OHDSI/CohortIncidence")
+```
+
+```{r}
+#| label: packages
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+```
+
+## Theme and colors
+
+Every figure in the talk uses the Johns Hopkins colors and a theme built on
+`theme_minimal()`.
+
+```{r}
+#| label: theme
+theme_set(theme_minimal())
+
+jhu_colors <- list(
+  HopkinsBlue = "#002D72",
+  Blue = "#005eb8",
+  BlueLight = "#68ACE5",
+  PaleBlue = "#A7BCD6",
+  Purple = "#470a68",
+  LightPurple = "#7c7fab",
+  Tan = "#D9C89E",
+  Gray1 = "#E5E2E0",
+  Gray2 = "#B4B2AD",
+  Gray3 = "#7E7E7C",
+  Gray4 = "#4A484C",
+  Gray5 = "#2C2C33",
+  Teal = "#6399AE",
+  Green = "#007A53"
+)
+
+theme_jhu <- function() {
+  theme_minimal(base_family = "Tahoma") +
+    theme(
+      plot.title = element_text(family = "Georgia", size = 18, hjust = 0.5,
+                                face = "bold", margin = margin(b = 10)),
+      plot.subtitle = element_text(hjust = 0.5, size = 12, margin = margin(t = 5, b = 15)),
+      plot.caption = element_text(size = 10, color = jhu_colors$Gray3, margin = margin(t = 15)),
+      axis.text = element_text(size = 9, color = jhu_colors$Gray5),
+      axis.title.y = element_text(size = 11, face = "bold", margin = margin(r = 15)),
+      axis.title.x = element_text(size = 11, face = "bold", margin = margin(t = 15)),
+      axis.line = element_line(color = jhu_colors$Gray1, linewidth = 0.5),
+      panel.grid.major.x = element_line(color = jhu_colors$Gray1, linewidth = 0.5),
+      panel.grid.minor = element_blank()
+    )
+}
+
+# Save a figure for the slides, at the size the slides expect
+image_dir <- "images/characterization"
+dir.create(image_dir, recursive = TRUE, showWarnings = FALSE)
+
+save_figure <- function(plot, name, width = 10, height = 5.6) {
+  ggsave(file.path(image_dir, paste0(name, ".png")), plot,
+         width = width, height = height, dpi = 200, device = ragg::agg_png)
+  plot
+}
+```
+
+# Part 1: Characterization
+
+## Connect to Eunomia and build the cohorts
+
+`Eunomia::createCohorts()` writes four example cohorts to the `cohort` table.
+We use three of them:
+
+| Cohort ID | Cohort |
+|---|---|
+| 1 | New users of celecoxib |
+| 2 | New users of diclofenac |
+| 3 | GI bleed |
+
+```{r}
+#| label: connect
+connection_details <- Eunomia::getEunomiaConnectionDetails()
+Eunomia::createCohorts(connection_details)
+con <- DatabaseConnector::connect(connection_details)
+
+cohort_names <- c("1" = "Celecoxib", "2" = "Diclofenac", "3" = "GI bleed")
+```
+
+## Cohort counts
+
+```{r}
+#| label: cohort-counts
+cohort_counts <- DatabaseConnector::querySql(
+  con,
+  "SELECT cohort_definition_id, COUNT(DISTINCT subject_id) AS persons
+     FROM main.cohort
+    WHERE cohort_definition_id IN (1, 2, 3)
+    GROUP BY cohort_definition_id",
+  snakeCaseToCamelCase = TRUE
+) |>
+  mutate(cohort = cohort_names[as.character(cohortDefinitionId)])
+
+cohort_counts
+```
+
+## Baseline characteristics (FeatureExtraction)
+
+FeatureExtraction computes the covariates behind a "Table 1": demographics,
+plus conditions and drugs recorded in the year before cohort entry. With
+`aggregated = TRUE` it returns summary statistics for the whole cohort.
+
+```{r}
+#| label: feature-extraction
+covariate_settings <- FeatureExtraction::createCovariateSettings(
+  useDemographicsGender = TRUE,
+  useDemographicsAge = TRUE,
+  useDemographicsAgeGroup = TRUE,
+  useConditionGroupEraLongTerm = TRUE,
+  useDrugGroupEraLongTerm = TRUE,
+  longTermStartDays = -365,
+  endDays = -1
+)
+
+get_covariates <- function(cohort_id) {
+  FeatureExtraction::getDbCovariateData(
+    connectionDetails = connection_details,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "cohort",
+    cohortIds = cohort_id,
+    covariateSettings = covariate_settings,
+    aggregated = TRUE
+  )
+}
+cov_celecoxib <- get_covariates(1)
+cov_diclofenac <- get_covariates(2)
+
+smd_all <- FeatureExtraction::computeStandardizedDifference(cov_celecoxib, cov_diclofenac) |>
+  as_tibble()
+```
+
+The standardized mean difference (SMD) is the difference between the cohorts
+on a covariate, in standard deviation units. We keep 20 covariates for the
+Table 1. FeatureExtraction computes (comparator − target), so we flip the sign:
+a positive SMD means the covariate is more common among celecoxib users.
+
+```{r}
+#| label: table1
+picked <- tribble(
+  ~covariateId, ~covariate,
+  8532001,      "Female",
+  6003,         "Age 30-34",
+  7003,         "Age 35-39",
+  8003,         "Age 40-44",
+  9003,         "Age 45-49",
+  4285898210,   "Polyp of colon",
+  30753210,     "Esophagitis",
+  81893210,     "Ulcerative colitis",
+  4310024210,   "Angiodysplasia of stomach",
+  4112343210,   "Acute viral pharyngitis",
+  4283893210,   "Sinusitis",
+  260139210,    "Acute bronchitis",
+  372328210,    "Otitis media",
+  81151210,     "Sprain of ankle",
+  1125315410,   "Acetaminophen",
+  1713332410,   "Amoxicillin",
+  1177480410,   "Ibuprofen",
+  1115008410,   "Naproxen",
+  1112807410,   "Aspirin",
+  1322184410,   "Clopidogrel"
+)
+
+table1 <- picked |>
+  left_join(smd_all, by = "covariateId") |>
+  transmute(
+    covariate,
+    pct_celecoxib = round(100 * mean1, 1),
+    pct_diclofenac = round(100 * mean2, 1),
+    smd = round(-stdDiff, 3)
+  )
+
+table1
+```
+
+## Age and sex
+
+FeatureExtraction gives age and sex separately. For the age-by-sex figures we
+need the joint distribution, so we query the `cohort` and `person` tables
+directly.
+
+```{r}
+#| label: age-sex
+age_sex_counts <- DatabaseConnector::renderTranslateQuerySql(
+  con,
+  "SELECT c.cohort_definition_id,
+          FLOOR((YEAR(c.cohort_start_date) - p.year_of_birth) / 5) * 5 AS age_group,
+          p.gender_concept_id,
+          COUNT(*) AS persons
+     FROM main.cohort c
+     JOIN main.person p ON p.person_id = c.subject_id
+    WHERE c.cohort_definition_id IN (1, 2)
+    GROUP BY c.cohort_definition_id,
+             FLOOR((YEAR(c.cohort_start_date) - p.year_of_birth) / 5) * 5,
+             p.gender_concept_id",
+  snakeCaseToCamelCase = TRUE
+) |>
+  mutate(
+    cohort = cohort_names[as.character(cohortDefinitionId)],
+    sex = if_else(genderConceptId == 8507, "Male", "Female")
+  )
+
+# Percent of each cohort in each age group and sex
+age_sex <- age_sex_counts |>
+  group_by(cohort) |>
+  mutate(
+    pct = 100 * persons / sum(persons),
+    age = paste0(ageGroup, "-", ageGroup + 4),
+    pct_signed = if_else(sex == "Female", -pct, pct)  # women's bars point left in the pyramid
+  ) |>
+  ungroup()
+
+age_sex
+```
+
+## Incidence (CohortIncidence)
+
+CohortIncidence computes incidence rates. The design below counts first GI
+bleeds in the 365 days after drug start, stratified by age group, sex, and
+calendar year.
+
+```{r}
+#| label: incidence
+ir_design <- CohortIncidence::createIncidenceDesign(
+  targetDefs = list(
+    CohortIncidence::createCohortRef(id = 1, name = "Celecoxib"),
+    CohortIncidence::createCohortRef(id = 2, name = "Diclofenac")
+  ),
+  outcomeDefs = list(
+    CohortIncidence::createOutcomeDef(id = 1, name = "GI bleed", cohortId = 3, cleanWindow = 9999)
+  ),
+  tars = list(
+    CohortIncidence::createTimeAtRiskDef(id = 1, startWith = "start", endWith = "start", endOffset = 365)
+  ),
+  analysisList = list(
+    CohortIncidence::createIncidenceAnalysis(targets = c(1, 2), outcomes = 1, tars = 1)
+  ),
+  strataSettings = CohortIncidence::createStrataSettings(
+    byAge = TRUE, ageBreaks = c(35, 40, 45), byGender = TRUE, byYear = TRUE
+  )
+)
+
+ir_results <- CohortIncidence::executeAnalysis(
+  connectionDetails = connection_details,
+  incidenceDesign = ir_design,
+  buildOptions = CohortIncidence::buildOptions(
+    cohortTable = "main.cohort",
+    cdmDatabaseSchema = "main",
+    sourceName = "Eunomia GiBleed",
+    refId = 1
+  )
+)
+```
+
+The results include every combination of strata. For the figures we keep the
+rows stratified by age group and sex (not by year), and give the age groups
+readable labels in age order.
+
+```{r}
+#| label: incidence-tidy
+age_labels <- c("<35" = "30-34", "35 - 39" = "35-39", "40 - 44" = "40-44", ">=45" = "45-49")
+
+ir <- ir_results$incidence_summary |>
+  rename_with(tolower) |>
+  left_join(ir_results$age_group_def |> rename_with(tolower) |> select(age_group_id, age_group_name),
+            by = "age_group_id") |>
+  mutate(
+    cohort = cohort_names[as.character(target_cohort_definition_id)],
+    sex = case_when(gender_id == 8507 ~ "Male", gender_id == 8532 ~ "Female"),
+    person_years = person_days / 365.25,
+    ir_per_1000py = 1000 * outcomes / person_years
+  ) |>
+  filter(is.na(start_year), !is.na(age_group_name), !is.na(sex)) |>
+  mutate(age_group = factor(age_labels[age_group_name], levels = age_labels))
+
+ir |> select(cohort, sex, age_group, outcomes, person_years, ir_per_1000py)
+```
+
+## Time to event
+
+Days from drug start to the first GI bleed after it, for people who bled.
+
+```{r}
+#| label: time-to-event
+tte <- DatabaseConnector::renderTranslateQuerySql(
+  con,
+  "SELECT t.cohort_definition_id, t.subject_id,
+          MIN(DATEDIFF(DAY, t.cohort_start_date, o.cohort_start_date)) AS days_to_event
+     FROM main.cohort t
+     JOIN main.cohort o
+       ON o.subject_id = t.subject_id
+      AND o.cohort_definition_id = 3
+      AND o.cohort_start_date >= t.cohort_start_date
+    WHERE t.cohort_definition_id IN (1, 2)
+    GROUP BY t.cohort_definition_id, t.subject_id",
+  snakeCaseToCamelCase = TRUE
+) |>
+  mutate(cohort = cohort_names[as.character(cohortDefinitionId)])
+
+DatabaseConnector::disconnect(con)
+
+tte |> count(cohort)
+```
+
+# Part 2: Visualization
+
+## Building a figure in four steps
+
+Each step adds one layer to the same plot.
+
+```{r}
+#| label: ggplot-build
+save_step <- function(plot, step) {
+  save_figure(plot, paste0("ggplot-build-", step), width = 8, height = 5)
+}
+
+# 1. Data and aesthetic mapping: axes, but nothing drawn yet
+p1 <- ggplot(ir, aes(x = age_group, y = ir_per_1000py))
+save_step(p1, 1)
+
+# 2. Add a geometry: one point per row
+p2 <- p1 + geom_point()
+save_step(p2, 2)
+
+# 3. Color by sex, connect with lines, and one panel per drug
+p3 <- p2 +
+  aes(color = sex, group = sex) +
+  geom_line() +
+  facet_wrap(~cohort)
+save_step(p3, 3)
+
+# 4. Colors, labels, and a theme
+p4 <- p3 +
+  scale_color_manual(values = c(Female = jhu_colors$Purple, Male = jhu_colors$BlueLight)) +
+  labs(
+    title = "GI bleed incidence by age and sex",
+    x = "Age at drug start", y = "Per 1,000 person-years", color = NULL
+  ) +
+  expand_limits(y = 0) +
+  theme_jhu() +
+  theme(legend.position = "top", strip.text = element_text(size = 12, face = "bold"))
+save_step(p4, 4)
+```
+
+## Visualization principles
+
+These figures use small made-up numbers, not Eunomia, so each principle is
+easy to see.
+
+### Principle 1: Use a common scale
+
+```{r}
+#| label: principle-common-scale
+shares <- tibble(
+  drug = c("Drug A", "Drug B", "Drug C", "Drug D", "Drug E"),
+  pct = c(23, 21, 20, 19, 17)
+)
+
+pie <- ggplot(shares, aes(x = "", y = pct, fill = drug)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  scale_fill_manual(values = unname(unlist(jhu_colors[c(
+    "HopkinsBlue", "Blue", "BlueLight", "Teal", "Tan"
+  )]))) +
+  labs(title = "Which drug is used most?", fill = NULL) +
+  theme_void(base_family = "Tahoma") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 16))
+
+bars <- ggplot(shares, aes(x = pct, y = reorder(drug, pct))) +
+  geom_col(fill = jhu_colors$HopkinsBlue, width = 0.7) +
+  geom_text(aes(label = paste0(pct, "%")), hjust = -0.2, size = 5) +
+  scale_x_continuous(limits = c(0, 27), expand = c(0, 0)) +
+  labs(title = "Same data, common scale", x = "Share of users (%)", y = NULL) +
+  theme_jhu()
+
+save_figure(pie + bars, "principle-pie-vs-bars")
+```
+
+### Principle 2: Start bars at zero
+
+```{r}
+#| label: principle-honest-axis
+rates <- tibble(group = c("Cohort A", "Cohort B"), rate = c(10.4, 11.1))
+
+truncated <- ggplot(rates, aes(x = group, y = rate)) +
+  geom_col(fill = jhu_colors$Purple, width = 0.6) +
+  coord_cartesian(ylim = c(10, 11.2)) +
+  labs(title = "Axis starts at 10: a big gap?", x = NULL,
+       y = "Events per 1,000 person-years") +
+  theme_jhu()
+
+full <- ggplot(rates, aes(x = group, y = rate)) +
+  geom_col(fill = jhu_colors$HopkinsBlue, width = 0.6) +
+  scale_y_continuous(limits = c(0, 12), expand = c(0, 0)) +
+  labs(title = "Axis starts at 0: about the same", x = NULL,
+       y = "Events per 1,000 person-years") +
+  theme_jhu()
+
+save_figure(truncated + full, "principle-honest-axis")
+```
+
+### Principle 3: Order categories meaningfully
+
+```{r}
+#| label: principle-order
+conditions <- tibble(
+  condition = c("Anemia", "Asthma", "Depression", "Diabetes", "GERD",
+                "Hyperlipidemia", "Hypertension", "Osteoarthritis"),
+  pct = c(6, 9, 14, 11, 8, 22, 31, 18)
+)
+
+alphabetical <- ggplot(conditions, aes(x = pct, y = factor(condition, levels = rev(sort(condition))))) +
+  geom_col(fill = jhu_colors$Gray3, width = 0.7) +
+  labs(title = "Alphabetical order", x = "Prevalence (%)", y = NULL) +
+  theme_jhu()
+
+sorted <- ggplot(conditions, aes(x = pct, y = reorder(condition, pct))) +
+  geom_col(fill = jhu_colors$HopkinsBlue, width = 0.7) +
+  labs(title = "Sorted by value", x = "Prevalence (%)", y = NULL) +
+  theme_jhu()
+
+save_figure(alphabetical + sorted, "principle-order")
+```
+
+### Principle 4: Label directly
+
+```{r}
+#| label: principle-direct-labels
+drug_colors_4 <- c(
+  "Drug A" = jhu_colors$HopkinsBlue, "Drug B" = jhu_colors$BlueLight,
+  "Drug C" = jhu_colors$Purple, "Drug D" = jhu_colors$Green
+)
+
+uptake <- expand_grid(drug = names(drug_colors_4), year = 2016:2024) |>
+  mutate(users = case_when(
+    drug == "Drug A" ~ 900 - 40 * (year - 2016),
+    drug == "Drug B" ~ 300 + 70 * (year - 2016),
+    drug == "Drug C" ~ 600 + 10 * (year - 2016),
+    drug == "Drug D" ~ 150 + 25 * (year - 2016)
+  ))
+
+with_legend <- ggplot(uptake, aes(x = year, y = users, color = drug)) +
+  geom_line(linewidth = 1.1) +
+  scale_color_manual(values = drug_colors_4) +
+  expand_limits(y = 0) +
+  labs(title = "Legend", x = NULL, y = "New users", color = NULL) +
+  theme_jhu() +
+  theme(legend.position = "right")
+
+with_labels <- ggplot(uptake, aes(x = year, y = users, color = drug)) +
+  geom_line(linewidth = 1.1) +
+  geom_text(data = filter(uptake, year == max(year)),
+            aes(label = drug), hjust = -0.15, size = 4.5, fontface = "bold") +
+  scale_color_manual(values = drug_colors_4, guide = "none") +
+  scale_x_continuous(limits = c(2016, 2026), breaks = seq(2016, 2024, 2)) +
+  expand_limits(y = 0) +
+  labs(title = "Labels on the lines", x = NULL, y = "New users") +
+  theme_jhu()
+
+save_figure(with_legend + with_labels, "principle-direct-labels")
+```
+
+### Principle 5: Use small multiples
+
+```{r}
+#| label: principle-small-multiples
+set.seed(20261005)
+databases <- paste("Database", LETTERS[1:6])
+monthly <- expand_grid(database = databases, month = 1:36) |>
+  mutate(
+    base = c(4, 6, 5, 3, 7, 5)[match(database, databases)],
+    trend = c(0.02, -0.03, 0, 0.05, -0.01, 0)[match(database, databases)],
+    jump = if_else(database == "Database E" & month >= 18, -3, 0),  # a coding change
+    rate = base + trend * month + jump + rnorm(n(), 0, 0.35)
+  )
+
+db_colors <- setNames(
+  unname(unlist(jhu_colors[c("HopkinsBlue", "BlueLight", "Purple", "Green", "Tan", "Gray3")])),
+  databases
+)
+
+tangled <- ggplot(monthly, aes(x = month, y = rate, color = database)) +
+  geom_line(linewidth = 0.8) +
+  scale_color_manual(values = db_colors) +
+  expand_limits(y = 0) +
+  labs(title = "One panel", x = "Month", y = "Per 1,000 person-years", color = NULL) +
+  theme_jhu() +
+  theme(legend.position = "bottom", legend.text = element_text(size = 8))
+
+multiples <- ggplot(monthly, aes(x = month, y = rate)) +
+  geom_line(color = jhu_colors$HopkinsBlue, linewidth = 0.8) +
+  facet_wrap(~database, ncol = 3) +
+  expand_limits(y = 0) +
+  labs(title = "One panel per database", x = "Month", y = "Per 1,000 person-years") +
+  theme_jhu() +
+  theme(strip.text = element_text(size = 10, face = "bold"))
+
+save_figure(tangled + multiples, "principle-small-multiples")
+```
+
+### Principle 6: Use color to highlight
+
+```{r}
+#| label: principle-highlight
+sites <- tibble(
+  database = c("REACH", paste("Database", LETTERS[1:7])),
+  persons = c(4200, 8100, 6500, 5900, 3800, 3100, 2400, 1700)
+)
+
+rainbow <- ggplot(sites, aes(x = persons, y = reorder(database, persons), fill = database)) +
+  geom_col(width = 0.7) +
+  scale_fill_manual(values = unname(unlist(jhu_colors[c(
+    "HopkinsBlue", "Blue", "BlueLight", "Purple", "LightPurple", "Teal", "Green", "Tan"
+  )])), guide = "none") +
+  labs(title = "A color for every bar", x = "Persons in cohort", y = NULL) +
+  theme_jhu()
+
+highlight <- ggplot(sites, aes(x = persons, y = reorder(database, persons),
+                               fill = database == "REACH")) +
+  geom_col(width = 0.7) +
+  scale_fill_manual(values = c(`TRUE` = jhu_colors$HopkinsBlue, `FALSE` = jhu_colors$Gray1),
+                    guide = "none") +
+  labs(title = "Color only for REACH", x = "Persons in cohort", y = NULL) +
+  theme_jhu()
+
+save_figure(rainbow + highlight, "principle-highlight")
+```
+
+### Principle 7: State the finding in the title
+
+```{r}
+#| label: principle-title
+bleeds <- tibble(drug = c("Drug A", "Drug B", "Drug C"), rate = c(4.1, 8.3, 4.6))
+
+bleed_bars <- function(title) {
+  ggplot(bleeds, aes(x = drug, y = rate)) +
+    geom_col(fill = if_else(bleeds$drug == "Drug B", jhu_colors$Purple, jhu_colors$Gray2),
+             width = 0.6) +
+    scale_y_continuous(limits = c(0, 10), expand = c(0, 0)) +
+    labs(title = title, x = NULL, y = "GI bleeds per 1,000 person-years") +
+    theme_jhu() +
+    theme(plot.title = element_text(size = 14))
+}
+
+save_figure(bleed_bars("GI bleed rate by drug") + bleed_bars("Drug B users bleed about twice as often"),
+            "principle-title")
+```
+
+## Example: cohort sizes
+
+A workhorse first draft with default settings, then a show pony: sorted,
+horizontal, labeled, and themed.
+
+```{r}
+#| label: counts
+p_counts_plain <- ggplot(cohort_counts, aes(x = cohort, y = persons)) +
+  geom_col() +
+  theme_gray()
+save_figure(p_counts_plain, "counts-plain")
+
+p_counts_polished <- ggplot(cohort_counts, aes(x = persons, y = reorder(cohort, persons))) +
+  geom_col(fill = jhu_colors$HopkinsBlue, width = 0.6) +
+  geom_text(aes(label = scales::comma(persons)), hjust = -0.2, size = 5) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.12)), labels = scales::comma) +
+  labs(
+    title = "Celecoxib users outnumber diclofenac users about 2 to 1",
+    subtitle = "People in each cohort, Eunomia GiBleed (synthetic data)",
+    x = "People", y = NULL
+  ) +
+  theme_jhu() +
+  theme(axis.text.y = element_text(size = 14), panel.grid.major.y = element_blank())
+save_figure(p_counts_polished, "counts-polished")
+```
+
+## Example: incidence by age and sex
+
+Three versions: default settings, a workhorse, and a show pony built on the
+workhorse.
+
+```{r}
+#| label: incidence-defaults
+# Defaults only: text age groups sort alphabetically, and four colors to decode
+p_ir_plain <- ggplot(ir, aes(x = age_group_name, y = ir_per_1000py, fill = paste(cohort, sex))) +
+  geom_col(position = "dodge")
+save_figure(p_ir_plain, "incidence-plain")
+```
+
+```{r}
+#| label: incidence-workhorse
+# Workhorse: ages in order, one panel per sex, y axis from zero
+p_ir_workhorse <- ggplot(ir, aes(x = age_group, y = ir_per_1000py, color = cohort)) +
+  geom_line(aes(group = cohort)) +
+  geom_point() +
+  facet_wrap(~sex) +
+  expand_limits(y = 0)
+save_figure(p_ir_workhorse, "incidence-workhorse")
+```
+
+```{r}
+#| label: incidence-show-pony
+# Show pony: the workhorse plus direct labels, colors, titles, and a theme
+drug_colors <- c(Celecoxib = jhu_colors$HopkinsBlue, Diclofenac = jhu_colors$Green)
+
+p_ir_polished <- p_ir_workhorse +
+  # Label each line at its last point (age 45-49)
+  geom_text(data = \(d) filter(d, age_group == "45-49"), aes(label = cohort),
+            hjust = -0.25, fontface = "bold", size = 4.5) +
+  scale_color_manual(values = drug_colors, guide = "none") +
+  # Extra room on the right for the labels
+  scale_x_discrete(expand = expansion(add = c(0.4, 1.3))) +
+  labs(
+    title = "Celecoxib users bled more often in most age-sex groups",
+    subtitle = "GI bleeds per 1,000 person-years in the year after drug start (age 45-49: under 10 bleeds per group)",
+    x = "Age at drug start", y = "GI bleeds per 1,000 person-years"
+  ) +
+  theme_jhu() +
+  theme(strip.text = element_text(size = 13, face = "bold"))
+save_figure(p_ir_polished, "incidence-polished")
+```
+
+## Example: Table 1 as a figure
+
+```{r}
+#| label: table1-figure
+p_smd <- ggplot(table1, aes(x = smd, y = reorder(covariate, smd))) +
+  annotate("rect", xmin = -0.1, xmax = 0.1, ymin = -Inf, ymax = Inf,
+           fill = jhu_colors$Gray1, alpha = 0.6) +
+  geom_vline(xintercept = 0, color = jhu_colors$Gray3) +
+  geom_point(aes(color = abs(smd) > 0.1), size = 3.5) +
+  scale_color_manual(values = c(`FALSE` = jhu_colors$Gray3, `TRUE` = jhu_colors$HopkinsBlue),
+                     guide = "none") +
+  labs(
+    title = "Celecoxib users had more prior GI disease than diclofenac users",
+    subtitle = "Standardized mean difference; shaded band = |SMD| < 0.1 (\"balanced\")",
+    x = "SMD (positive = more common in celecoxib)", y = NULL
+  ) +
+  theme_jhu()
+save_figure(p_smd, "table1-smd-plot")
+```
+
+## Example: four views of age and sex
+
+The same `age_sex` table, plotted four ways. Only the geoms and facets change.
+
+```{r}
+#| label: age-sex-setup
+sex_colors <- c(Female = jhu_colors$Purple, Male = jhu_colors$BlueLight)
+age_sex_title <- "Age and sex distribution by cohort"
+age_sex_subtitle <- "Percent of each cohort by age group and sex at drug start"
+
+theme_age_sex <- function() {
+  theme_jhu() +
+    theme(legend.position = "top", strip.text = element_text(size = 13, face = "bold"))
+}
+```
+
+```{r}
+#| label: age-sex-stacked
+# 1. Stacked bars
+p_stacked <- ggplot(age_sex, aes(x = age, y = pct, fill = sex)) +
+  geom_col(width = 0.7) +
+  facet_wrap(~cohort) +
+  scale_fill_manual(values = sex_colors) +
+  scale_y_continuous(labels = \(x) paste0(x, "%")) +
+  labs(title = age_sex_title, subtitle = age_sex_subtitle,
+       x = "Age (years)", y = "Percent of cohort", fill = NULL) +
+  theme_age_sex()
+save_figure(p_stacked, "age-sex-stacked")
+```
+
+```{r}
+#| label: age-sex-pyramid
+# 2. Pyramid: women's values are negative, so their bars point left
+p_pyramid <- ggplot(age_sex, aes(x = pct_signed, y = age, fill = sex)) +
+  geom_col(width = 0.8) +
+  geom_text(aes(label = sprintf("%.0f%%", pct),
+                hjust = if_else(sex == "Female", 1.15, -0.15)), size = 3.8) +
+  facet_wrap(~cohort) +
+  scale_x_continuous(labels = \(x) paste0(abs(x), "%"), limits = c(-30, 30)) +
+  scale_fill_manual(values = sex_colors) +
+  labs(title = age_sex_title, subtitle = age_sex_subtitle,
+       x = "Percent of cohort", y = "Age (years)", fill = NULL) +
+  theme_age_sex()
+save_figure(p_pyramid, "age-sex-pyramid")
+```
+
+```{r}
+#| label: age-sex-faceted
+# 3. Facets: one panel per cohort and sex
+p_faceted <- ggplot(age_sex, aes(x = pct, y = age, fill = sex)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = sprintf("%.0f%%", pct)), hjust = -0.15, size = 3.8) +
+  facet_grid(sex ~ cohort) +
+  scale_x_continuous(labels = \(x) paste0(x, "%"), limits = c(0, 30)) +
+  scale_fill_manual(values = sex_colors, guide = "none") +
+  labs(title = age_sex_title, subtitle = age_sex_subtitle,
+       x = "Percent of cohort", y = "Age (years)") +
+  theme_age_sex()
+save_figure(p_faceted, "age-sex-faceted")
+```
+
+```{r}
+#| label: age-sex-dotplot
+# 4. Connected dot plot: women and men on one scale in each row
+p_dotplot <- ggplot(age_sex, aes(x = pct, y = age)) +
+  geom_line(aes(group = age), color = jhu_colors$Gray2, linewidth = 1.2) +
+  geom_point(aes(color = sex), size = 4) +
+  facet_wrap(~cohort) +
+  scale_x_continuous(labels = \(x) paste0(x, "%"), limits = c(0, NA)) +
+  scale_color_manual(values = sex_colors) +
+  labs(title = age_sex_title, subtitle = age_sex_subtitle,
+       x = "Percent of cohort", y = "Age (years)", color = NULL) +
+  theme_age_sex()
+save_figure(p_dotplot, "age-sex-dotplot")
+```
+
+## Example: four views of time to GI bleed
+
+```{r}
+#| label: tte-setup
+# Bleeds per week, by the day each week starts
+tte_weekly <- tte |>
+  mutate(week_start = 7 * floor(daysToEvent / 7)) |>
+  count(cohort, week_start)
+
+# Cumulative percent of each cohort's bleeds by day
+tte_cum <- tte |>
+  arrange(cohort, daysToEvent) |>
+  group_by(cohort) |>
+  mutate(pct = 100 * row_number() / n()) |>
+  ungroup()
+
+n_users <- setNames(cohort_counts$persons, cohort_counts$cohort)
+n_bleeds <- table(tte$cohort)
+tte_title <- "Days from drug start to first GI bleed"
+tte_subtitle <- sprintf(
+  "People with a GI bleed: %d of %s celecoxib users and %d of %s diclofenac users",
+  n_bleeds[["Celecoxib"]], scales::comma(n_users[["Celecoxib"]]),
+  n_bleeds[["Diclofenac"]], scales::comma(n_users[["Diclofenac"]])
+)
+day_axis <- scale_x_continuous(breaks = seq(0, 91, by = 14), limits = c(0, 91))
+```
+
+```{r}
+#| label: tte-histogram
+# 1. Histogram: counts per week, one panel per drug, common y axis
+p_hist <- ggplot(tte, aes(x = daysToEvent, fill = cohort)) +
+  geom_histogram(binwidth = 7, boundary = 0, closed = "left", color = "white") +
+  facet_wrap(~cohort, ncol = 1) +
+  scale_fill_manual(values = drug_colors, guide = "none") +
+  day_axis +
+  labs(title = tte_title, subtitle = tte_subtitle,
+       x = "Days since drug start", y = "People (per week)") +
+  theme_jhu() +
+  theme(strip.text = element_text(size = 13, face = "bold", hjust = 0))
+save_figure(p_hist, "time-to-event-histogram")
+```
+
+```{r}
+#| label: tte-lines
+# 2. Weekly counts as connected lines on one panel
+p_lines <- ggplot(tte_weekly, aes(x = week_start, y = n, color = cohort)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.5) +
+  geom_text(data = \(d) slice_max(d, week_start, by = cohort),
+            aes(label = cohort), hjust = -0.15, fontface = "bold", size = 4.5) +
+  scale_color_manual(values = drug_colors, guide = "none") +
+  scale_x_continuous(breaks = seq(0, 91, by = 14), limits = c(0, 100)) +
+  expand_limits(y = 0) +
+  labs(title = tte_title, subtitle = tte_subtitle,
+       x = "Days since drug start (week starting)", y = "People (per week)") +
+  theme_jhu()
+save_figure(p_lines, "time-to-event-lines")
+```
+
+```{r}
+#| label: tte-facets
+# 3. Weekly counts, one panel per drug, common y axis
+p_tte_facets <- ggplot(tte_weekly, aes(x = week_start, y = n, color = cohort)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.5) +
+  facet_wrap(~cohort, ncol = 1) +
+  scale_color_manual(values = drug_colors, guide = "none") +
+  day_axis +
+  expand_limits(y = 0) +
+  labs(title = tte_title, subtitle = tte_subtitle,
+       x = "Days since drug start (week starting)", y = "People (per week)") +
+  theme_jhu() +
+  theme(strip.text = element_text(size = 13, face = "bold", hjust = 0))
+save_figure(p_tte_facets, "time-to-event-facets")
+```
+
+```{r}
+#| label: tte-cumulative
+# 4. Cumulative percent of each cohort's bleeds
+p_cum <- ggplot(tte_cum, aes(x = daysToEvent, y = pct, color = cohort)) +
+  geom_step(linewidth = 1) +
+  geom_text(data = \(d) slice_max(d, daysToEvent, by = cohort, with_ties = FALSE),
+            aes(label = cohort), hjust = -0.1, vjust = c(1.5, -0.5),
+            fontface = "bold", size = 4.5) +
+  scale_color_manual(values = drug_colors, guide = "none") +
+  scale_x_continuous(breaks = seq(0, 91, by = 14), limits = c(0, 105)) +
+  scale_y_continuous(labels = \(x) paste0(x, "%"), limits = c(0, 100)) +
+  labs(title = tte_title, subtitle = tte_subtitle,
+       x = "Days since drug start", y = "Cumulative percent of bleeds") +
+  theme_jhu()
+save_figure(p_cum, "time-to-event-cumulative")
+```
+
+# Session info
+
+```{r}
+#| label: session-info
+sessionInfo()
+```

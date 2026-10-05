@@ -1,0 +1,86 @@
+/*-- scss:defaults --*/
+
+// JHU palette, matching jhu_colors in functions/theme_jhu.R
+$hopkins-blue: #002D72;
+$jhu-blue: #005eb8;
+$jhu-blue-light: #68ACE5;
+$jhu-pale-blue: #A7BCD6;
+$jhu-gray1: #E5E2E0;
+$jhu-gray3: #7E7E7C;
+$jhu-gray5: #2C2C33;
+
+$body-bg: #ffffff;
+$body-color: $jhu-gray5;
+$link-color: $jhu-blue;
+$selection-bg: $jhu-pale-blue;
+
+$font-family-sans-serif: Tahoma, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+$presentation-heading-font: Georgia, "Times New Roman", serif;
+$presentation-heading-color: $hopkins-blue;
+$presentation-heading-font-weight: 700;
+$presentation-font-size-root: 34px;
+$presentation-h2-font-size: 1.5em;
+
+// Left-align the title slide; Quarto drops the author-block indent only when this is set
+$presentation-title-slide-text-align: left;
+
+$code-block-bg: #f6f7f9;
+$code-block-border-color: $jhu-gray1;
+$code-color: $hopkins-blue;
+
+/*-- scss:rules --*/
+
+.reveal .slides section h2 {
+  border-bottom: 3px solid $hopkins-blue;
+  padding-bottom: 0.2em;
+  margin-bottom: 0.6em;
+}
+
+// Title slide: blue band behind the title
+#title-slide {
+  text-align: left;
+
+  .title {
+    color: $hopkins-blue;
+    font-size: 2em;
+  }
+
+  .subtitle {
+    color: $jhu-blue;
+    font-style: italic;
+  }
+
+  .quarto-title-authors {
+    justify-content: flex-start;
+  }
+}
+
+// Section header slides (level-1 headings)
+.reveal .slides section.title-slide.level1 h1 {
+  color: $hopkins-blue;
+}
+
+.reveal .footer {
+  color: $jhu-gray3;
+  font-size: 0.45em;
+}
+
+.reveal .slide-number {
+  color: $jhu-gray3;
+}
+
+// Utility classes
+.reveal .small { font-size: 0.75em; }
+.reveal .smaller-code pre { font-size: 0.5em; }
+
+.reveal .source {
+  font-size: 0.6em;
+  color: $jhu-gray3;
+}
+
+.reveal .callout-box {
+  border-left: 6px solid $hopkins-blue;
+  background: lighten($jhu-pale-blue, 15%);
+  padding: 0.5em 0.8em;
+  margin: 0.5em 0;
+}

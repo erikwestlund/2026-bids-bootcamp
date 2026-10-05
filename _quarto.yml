@@ -1,0 +1,29 @@
+# Shared settings for every deck in this project.
+# Code is shown, never run: decks set `eval: false` so nothing executes at render time.
+
+project:
+  type: default
+
+execute:
+  eval: false
+  echo: true
+  warning: false
+  message: false
+
+format:
+  revealjs:
+    theme: [default, assets/jhu.scss]
+    width: 1280
+    height: 720
+    incremental: false
+    slide-number: c/t
+    transition: slide
+    background-transition: fade
+    controls: true
+    progress: true
+    center: false
+    hash: true
+    preview-links: auto
+    highlight-style: github
+    code-line-numbers: false
+    embed-resources: true
