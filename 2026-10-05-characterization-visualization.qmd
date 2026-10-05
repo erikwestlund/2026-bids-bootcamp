@@ -24,7 +24,7 @@ footer: "BIDS Bootcamp · Characterization &amp; Visualization"
 
 . . .
 
-On Thursday/Friday you were introducted to building cohorts and phenotyping. Today we will learn how to *describe* the generated cohorts using both tables and figures. 
+On last Thursday/Friday you were introduced to building cohorts and phenotyping. Today we will learn how to *describe* the generated cohorts using both tables and figures. 
 
 ## Three Kinds of Questions
 
