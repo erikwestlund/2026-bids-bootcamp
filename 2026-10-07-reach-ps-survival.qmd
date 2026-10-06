@@ -4,8 +4,583 @@ subtitle: "Study designs, outcome models, and running them with Strategus"
 author: "Erik Westlund"
 date: "2026-10-07"
 footer: "BIDS Bootcamp · REACH and RStudio"
+execute:
+  eval: true
+fig-width: 10
+fig-height: 4.6
 ---
 
-<!-- Outline to come. -->
+<!--
+Day 1 is concepts plus live walkthroughs. No student hands-on.
+Audience: little background in stats, research design, or the tools.
+This is their first explanation of what these models do.
+
+Teaching pattern, repeated for every model:
+  1. Simulate clean data where we know the true effect.
+  2. Fit the model and read the answer off the output.
+  3. Add confounders (age, sex). The unadjusted model gets it wrong.
+  4. Adjust for the confounders. We get the right answer back.
+
+Unlike the other decks, this one runs its code at render time so the
+simulation output appears on the slides. Requires ggplot2, survival, MatchIt.
+-->
+
+```{r}
+#| label: setup
+#| include: false
+library(ggplot2)
+library(survival)
+library(MatchIt)
+
+theme_set(theme_minimal(base_size = 18))
+
+# Format a number for slide text, with a typographic minus sign
+fmt <- function(x, digits = 2) sub("^-", "\u2212", formatC(x, digits = digits, format = "f"))
+```
+
+# Welcome
+
+## Today's Plan
+
+1. Study design and causal inference
+2. The four regression models used most often in observational research
+3. Confounding, and how adjustment removes it
+4. A preview of propensity scores and CohortMethod
+
+. . .
+
+On Monday we described cohorts with tables and figures. Today and Friday we move from description to estimation: measuring the effect of a treatment on an outcome.
+
+# Before We Model
+
+## Where This Runs: REACH
+
+- REACH is our deidentified data enclave.
+- Analyses on real patient data run in RStudio inside REACH.
+- Today's examples use simulated data, so everything shown here runs on a laptop.
+
+## Design Comes First
+
+Aki's lecture covered causal inference. Today we use a few of those ideas.
+
+Before choosing a model, a study needs answers to three questions:
+
+- What is the research question?
+- Which groups are being compared?
+- What is the outcome, and over what period is it measured?
+
+. . .
+
+A statistical model cannot correct a flawed design. The design determines what the model is able to estimate.
+
+## Why Randomized Trials Work
+
+- In a randomized controlled trial, chance alone decides who receives the treatment.
+- As a result, the treated and untreated groups are expected to be the same at baseline in every respect, measured or not.
+- Any systematic difference in outcomes between the groups can therefore be attributed to the treatment.
+
+## Observational Data
+
+In observational data, treatment is not assigned at random. Doctors and patients choose treatments for reasons, and those reasons can also affect the outcome.
+
+A **confounder** is a variable that affects both which treatment a person receives and the outcome.
+
+## Confounding by Age and Sex
+
+In today's simulations, older patients and men are more likely to be treated. They are also more likely to have worse outcomes.
+
+```{r}
+#| label: dag
+#| echo: false
+#| fig-height: 3.6
+nodes <- data.frame(
+  name = c("Age", "Sex", "Treatment", "Outcome"),
+  x = c(0.7, 1.3, 0, 2),
+  y = c(1, 1, 0, 0)
+)
+edges <- data.frame(
+  from = c("Age", "Age", "Sex", "Sex", "Treatment"),
+  to = c("Treatment", "Outcome", "Treatment", "Outcome", "Outcome")
+)
+edges <- cbind(
+  setNames(nodes[match(edges$from, nodes$name), c("x", "y")], c("x", "y")),
+  setNames(nodes[match(edges$to, nodes$name), c("x", "y")], c("xend", "yend"))
+)
+# Shorten each arrow so it stops at the edge of the label
+shrink <- 0.22
+dx <- edges$xend - edges$x
+dy <- edges$yend - edges$y
+len <- sqrt(dx^2 + dy^2)
+edges <- transform(
+  edges,
+  x = x + shrink * dx / len, y = y + shrink * dy / len,
+  xend = xend - shrink * dx / len, yend = yend - shrink * dy / len
+)
+
+ggplot() +
+  geom_segment(data = edges, aes(x, y, xend = xend, yend = yend),
+               arrow = arrow(length = unit(0.25, "cm"), type = "closed"),
+               color = "#7E7E7C", linewidth = 0.8) +
+  geom_label(data = nodes, aes(x, y, label = name), size = 7,
+             color = "#002D72", linewidth = 0.6,
+             label.padding = unit(0.4, "lines")) +
+  coord_cartesian(xlim = c(-0.3, 2.3), ylim = c(-0.2, 1.2)) +
+  theme_void()
+```
+
+A comparison of treated and untreated patients that ignores age and sex mixes the effect of the treatment with the effects of age and sex.
+
+## Why We Simulate
+
+- In a simulation, we choose the true effect of the treatment before generating the data.
+- We can then check whether a method recovers that effect.
+- Testing a method on simulated data shows how it behaves before we trust it on real data, where the true effect is unknown.
+
+# The Models
+
+## Four Common Models
+
+The right model depends on the type of outcome.
+
+| Outcome | Example | Model | R function | Treatment effect |
+|---|---|---|---|---|
+| Continuous | Blood pressure | Linear (OLS) | `lm()` | Difference in mean outcome |
+| Binary | GI bleed | Logistic | `glm(family = binomial)` | Odds ratio |
+| Count or rate | Number of ER visits | Poisson | `glm(family = poisson)` | Rate ratio |
+| Time to event | Time until GI bleed | Cox | `coxph()` | Hazard ratio |
+
+## Conditional Effects
+
+Each treatment effect is conditional on the other covariates in the model. It compares treated and untreated patients who have the same values of those covariates.
+
+## Two Simulated Datasets
+
+We build two datasets of 10,000 patients each and reuse them for every model.
+
+- **`trial`**: a randomized trial. A coin flip decides treatment.
+- **`obs`**: observational data. Age and sex affect both treatment and the outcome.
+
+. . .
+
+For each model, we add an outcome with a known treatment effect to both datasets. We then check whether the model recovers that effect.
+
+# Linear Regression
+
+## Linear Regression (OLS)
+
+Linear regression models a continuous outcome as a straight-line function of the predictors.
+
+- The **intercept** is the expected outcome when every predictor is zero.
+- The **coefficient** on treatment is the expected difference in the outcome between treated and untreated patients who have the same values of the other predictors.
+
+. . .
+
+In the simulation, the outcome is systolic blood pressure, and the treatment lowers it by 5 mmHg.
+
+## Simulating a Randomized Trial
+
+```{r}
+#| label: sim-trial
+set.seed(21)
+n <- 10000
+
+# A coin flip assigns treatment: 1 = treated, 0 = untreated
+trial <- data.frame(treated = rbinom(n, size = 1, prob = 0.5))
+
+# Blood pressure averages 140; treatment lowers it by 5; rnorm() adds noise
+trial$sbp <- 140 - 5 * trial$treated + rnorm(n, mean = 0, sd = 10)
+
+head(trial, 4)
+```
+
+## Comparing the Two Groups
+
+```{r}
+#| label: plot-trial-sbp
+#| fig-height: 4
+ggplot(trial, aes(x = factor(treated), y = sbp)) +
+  geom_jitter(width = 0.2, alpha = 0.08, color = "#68ACE5") +
+  stat_summary(fun = mean, geom = "point", size = 5, color = "#002D72") +
+  scale_x_discrete(labels = c("Untreated", "Treated")) +
+  labs(x = NULL, y = "Systolic blood pressure (mmHg)")
+```
+
+The dark points mark each group's mean.
+
+## Fitting the Model
+
+`lm()` fits a linear regression. `coef()` returns the estimates, and `confint()` returns their 95% confidence intervals.
+
+```{r}
+#| label: fit-ols-trial
+fit_ols_trial <- lm(sbp ~ treated, data = trial)
+round(cbind(estimate = coef(fit_ols_trial), confint(fit_ols_trial)), 2)
+```
+
+. . .
+
+The coefficient on `treated` is close to the true effect of −5. With a single binary predictor, it equals the difference between the two group means:
+
+```{r}
+#| label: means-trial
+aggregate(sbp ~ treated, data = trial, FUN = mean)
+```
+
+## Simulating Observational Data
+
+Now treatment depends on age and sex. `plogis()` converts a score into a probability between 0 and 1.
+
+```{r}
+#| label: sim-obs
+obs <- data.frame(
+  age = rnorm(n, mean = 60, sd = 10),
+  male = rbinom(n, size = 1, prob = 0.5)
+)
+
+# Older patients and men are more likely to be treated
+obs$treated <- rbinom(n, size = 1,
+                      prob = plogis(-1.5 + (obs$age - 60) / 10 + obs$male))
+
+aggregate(cbind(age, male) ~ treated, data = obs, FUN = mean)
+```
+
+Treated patients are older on average, and a larger share of them are men.
+
+## A Confounded Outcome
+
+Blood pressure rises with age and is higher in men. The treatment effect is still −5.
+
+```{r}
+#| label: fit-ols-naive
+obs$sbp <- 100 + 0.7 * obs$age + 4 * obs$male - 5 * obs$treated +
+  rnorm(n, mean = 0, sd = 10)
+
+fit_ols_naive <- lm(sbp ~ treated, data = obs)
+round(cbind(estimate = coef(fit_ols_naive), confint(fit_ols_naive)), 2)
+```
+
+. . .
+
+The model estimates an effect of `r fmt(coef(fit_ols_naive)[["treated"]], 1)` mmHg. The treatment appears to raise blood pressure, because treated patients are older and more often men.
+
+## Seeing the Confounding
+
+```{r}
+#| label: plot-obs-sbp
+#| fig-height: 4.4
+ggplot(obs, aes(x = age, y = sbp, color = factor(treated))) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = 1.5) +
+  scale_color_manual(values = c("0" = "#7E7E7C", "1" = "#002D72"),
+                     labels = c("Untreated", "Treated"), name = NULL) +
+  labs(x = "Age", y = "Systolic blood pressure (mmHg)")
+```
+
+At any given age, treated patients have lower blood pressure. The treated group is older, which hides this difference when age is ignored.
+
+## Adjusting for Age and Sex
+
+Adding age and sex to the model compares treated and untreated patients of the same age and sex.
+
+```{r}
+#| label: fit-ols-adj
+fit_ols_adj <- lm(sbp ~ treated + age + male, data = obs)
+round(cbind(estimate = coef(fit_ols_adj), confint(fit_ols_adj)), 2)
+```
+
+. . .
+
+The adjusted estimate, `r fmt(coef(fit_ols_adj)[["treated"]], 1)` mmHg, is close to the true effect of −5.
+
+# Logistic Regression
+
+## Logistic Regression
+
+Logistic regression models a binary outcome, such as whether a patient has a GI bleed.
+
+- The **odds** of an event are the probability it happens divided by the probability it does not. A 20% risk is odds of 0.2 / 0.8 = 0.25.
+- The model estimates coefficients on the **log odds** scale.
+- Exponentiating a coefficient with `exp()` gives an **odds ratio**. An odds ratio of 2 means the treatment doubles the odds of the outcome.
+
+. . .
+
+In the simulation, the treatment doubles the odds of a GI bleed.
+
+## Logistic: Randomized Trial
+
+`rbinom()` draws a 0 or 1 for each patient, using the probability from `plogis()`.
+
+```{r}
+#| label: fit-logit-trial
+trial$bleed <- rbinom(n, size = 1, prob = plogis(-2 + log(2) * trial$treated))
+
+fit_logit_trial <- glm(bleed ~ treated, family = binomial, data = trial)
+round(exp(cbind(odds_ratio = coef(fit_logit_trial), confint(fit_logit_trial))), 2)
+```
+
+. . .
+
+The odds ratio for `treated` is close to the true value of 2. The intercept row is the odds of a bleed among untreated patients.
+
+## Logistic: Observational, Unadjusted
+
+Older patients and men are also more likely to bleed.
+
+```{r}
+#| label: fit-logit-naive
+obs$bleed <- rbinom(n, size = 1, prob = plogis(
+  -2 + log(2) * obs$treated + 0.05 * (obs$age - 60) + 0.5 * obs$male
+))
+
+fit_logit_naive <- glm(bleed ~ treated, family = binomial, data = obs)
+round(exp(cbind(odds_ratio = coef(fit_logit_naive), confint(fit_logit_naive))), 2)
+```
+
+. . .
+
+The unadjusted odds ratio, `r fmt(exp(coef(fit_logit_naive)[["treated"]]), 2)`, overstates the harm of the treatment.
+
+## Logistic: Observational, Adjusted
+
+```{r}
+#| label: fit-logit-adj
+fit_logit_adj <- glm(bleed ~ treated + age + male, family = binomial, data = obs)
+round(exp(cbind(odds_ratio = coef(fit_logit_adj), confint(fit_logit_adj))), 2)
+```
+
+. . .
+
+After adjustment, the odds ratio for `treated` is `r fmt(exp(coef(fit_logit_adj)[["treated"]]), 2)`, close to the true value of 2. The `age` row is the odds ratio for each additional year of age.
+
+# Poisson Regression
+
+## Poisson Regression
+
+Poisson regression models counts of events, such as the number of ER visits.
+
+- Patients are followed for different lengths of time. A patient followed for three years has more time to visit the ER than one followed for six months.
+- The model accounts for this with an **offset**: the log of each patient's **person-time**.
+- The model then estimates a **rate**, the same quantity as Monday's incidence rates.
+- Exponentiating a coefficient gives a **rate ratio**.
+
+. . .
+
+In the simulation, the treatment raises the rate of ER visits by 50%, a rate ratio of 1.5.
+
+## Poisson: Randomized Trial
+
+Each patient is followed for between six months and three years. `rpois()` draws a count of visits from that patient's rate and follow-up time.
+
+```{r}
+#| label: fit-pois-trial
+trial$years <- runif(n, min = 0.5, max = 3)
+trial$visits <- rpois(n, lambda = 0.5 * 1.5^trial$treated * trial$years)
+
+fit_pois_trial <- glm(visits ~ treated + offset(log(years)),
+                      family = poisson, data = trial)
+round(exp(cbind(rate_ratio = coef(fit_pois_trial), confint(fit_pois_trial))), 2)
+```
+
+. . .
+
+The intercept row is the rate among untreated patients: about 0.5 visits per person-year.
+
+## Poisson: Observational, Unadjusted
+
+```{r}
+#| label: fit-pois-naive
+obs$years <- runif(n, min = 0.5, max = 3)
+obs$visits <- rpois(n, lambda = 0.5 * 1.5^obs$treated *
+  exp(0.03 * (obs$age - 60) + 0.3 * obs$male) * obs$years)
+
+fit_pois_naive <- glm(visits ~ treated + offset(log(years)),
+                      family = poisson, data = obs)
+round(exp(cbind(rate_ratio = coef(fit_pois_naive), confint(fit_pois_naive))), 2)
+```
+
+. . .
+
+The unadjusted rate ratio is `r fmt(exp(coef(fit_pois_naive)[["treated"]]), 2)`. The true value is 1.5.
+
+## Poisson: Observational, Adjusted
+
+```{r}
+#| label: fit-pois-adj
+fit_pois_adj <- glm(visits ~ treated + age + male + offset(log(years)),
+                    family = poisson, data = obs)
+round(exp(cbind(rate_ratio = coef(fit_pois_adj), confint(fit_pois_adj))), 2)
+```
+
+. . .
+
+After adjustment, the rate ratio is `r fmt(exp(coef(fit_pois_adj)[["treated"]]), 2)`.
+
+# Survival Analysis
+
+## Survival Analysis
+
+Survival analysis models the time until an event occurs.
+
+- Some patients leave the data before the event can be observed, for example because they change insurance. This is called **censoring**. We know only that they had not had the event by the time they left.
+- **Kaplan–Meier curves** show the proportion of each group that is still event-free over time.
+- The **Cox model** estimates a **hazard ratio**: the ratio of the event rates in the two groups at any point in time.
+- The Cox model assumes that this ratio is constant over time. This is the **proportional hazards** assumption.
+
+. . .
+
+In the simulation, the treatment doubles the hazard of a GI bleed.
+
+## Simulating Time to Event
+
+`rexp()` draws each patient's time to a GI bleed. A second draw sets when each patient leaves the data.
+
+```{r}
+#| label: sim-surv-trial
+bleed_time <- rexp(n, rate = 0.1 * 2^trial$treated)  # years
+censor_time <- runif(n, min = 0, max = 5)
+
+# We observe whichever comes first
+trial$time <- pmin(bleed_time, censor_time)
+trial$event <- as.integer(bleed_time <= censor_time)  # 1 = bleed, 0 = censored
+
+head(trial[, c("treated", "time", "event")], 4)
+```
+
+## Kaplan–Meier Curves
+
+`Surv()` combines the follow-up time and the event indicator. `survfit()` estimates the curves.
+
+```{r}
+#| label: km-trial
+#| fig-height: 3.8
+km <- survfit(Surv(time, event) ~ treated, data = trial)
+km_data <- data.frame(time = km$time, surv = km$surv,
+                      group = rep(c("Untreated", "Treated"), km$strata))
+
+ggplot(km_data, aes(x = time, y = surv, color = group)) +
+  geom_step(linewidth = 1.5) +
+  scale_color_manual(values = c(Untreated = "#7E7E7C", Treated = "#002D72"), name = NULL) +
+  labs(x = "Years since treatment start", y = "Proportion without a GI bleed")
+```
+
+## Cox: Randomized Trial
+
+`coxph()` fits the Cox model. Its output has no intercept.
+
+```{r}
+#| label: fit-cox-trial
+fit_cox_trial <- coxph(Surv(time, event) ~ treated, data = trial)
+round(exp(cbind(hazard_ratio = coef(fit_cox_trial), confint(fit_cox_trial))), 2)
+```
+
+. . .
+
+The hazard ratio is close to the true value of 2.
+
+## Cox: Observational, Unadjusted
+
+```{r}
+#| label: fit-cox-naive
+bleed_time <- rexp(n, rate = 0.1 * 2^obs$treated *
+  exp(0.05 * (obs$age - 60) + 0.5 * obs$male))
+censor_time <- runif(n, min = 0, max = 5)
+obs$time <- pmin(bleed_time, censor_time)
+obs$event <- as.integer(bleed_time <= censor_time)
+
+fit_cox_naive <- coxph(Surv(time, event) ~ treated, data = obs)
+round(exp(cbind(hazard_ratio = coef(fit_cox_naive), confint(fit_cox_naive))), 2)
+```
+
+. . .
+
+The unadjusted hazard ratio is `r fmt(exp(coef(fit_cox_naive)[["treated"]]), 2)`. The true value is 2.
+
+## Cox: Observational, Adjusted
+
+```{r}
+#| label: fit-cox-adj
+fit_cox_adj <- coxph(Surv(time, event) ~ treated + age + male, data = obs)
+round(exp(cbind(hazard_ratio = coef(fit_cox_adj), confint(fit_cox_adj))), 2)
+```
+
+. . .
+
+After adjustment, the hazard ratio is `r fmt(exp(coef(fit_cox_adj)[["treated"]]), 2)`.
+
+## Summary
+
+```{r}
+#| label: summary-table
+#| echo: false
+effect <- function(fit, exponentiate) {
+  est <- coef(fit)[["treated"]]
+  fmt(if (exponentiate) exp(est) else est)
+}
+
+knitr::kable(data.frame(
+  Model = c("Linear (OLS)", "Logistic", "Poisson", "Cox"),
+  `Treatment effect` = c("Difference in means", "Odds ratio", "Rate ratio", "Hazard ratio"),
+  Truth = c("−5.00", "2.00", "1.50", "2.00"),
+  Trial = c(effect(fit_ols_trial, FALSE), effect(fit_logit_trial, TRUE),
+            effect(fit_pois_trial, TRUE), effect(fit_cox_trial, TRUE)),
+  `Observational, unadjusted` = c(effect(fit_ols_naive, FALSE), effect(fit_logit_naive, TRUE),
+                                  effect(fit_pois_naive, TRUE), effect(fit_cox_naive, TRUE)),
+  `Observational, adjusted` = c(effect(fit_ols_adj, FALSE), effect(fit_logit_adj, TRUE),
+                                effect(fit_pois_adj, TRUE), effect(fit_cox_adj, TRUE)),
+  check.names = FALSE
+), align = "llrrrr")
+```
+
+In every model, the unadjusted estimate from observational data is biased. Adjusting for the confounders recovers the true effect.
+
+# From Two Confounders to Thousands
+
+## The Problem With Real Data
+
+In the simulations, there were two confounders, and we knew what they were.
+
+In OMOP data, each patient can have thousands of recorded conditions, drugs, procedures, and measurements. Any of them might be a confounder. Adding thousands of covariates to an outcome model is difficult to do well.
+
+## Propensity Scores: A Preview
+
+A **propensity score** is the probability that a patient receives the treatment, given their covariates.
+
+- Patients with similar propensity scores have similar covariates, on average.
+- Matching treated and untreated patients on the score produces groups that are comparable at baseline, as in a trial.
+- The outcome model can then compare the matched groups directly, without adding the covariates.
+
+## Matching on the Propensity Score
+
+`matchit()` estimates each patient's propensity score from age and sex. It then pairs each treated patient with the untreated patient whose score is closest. The **caliper** sets how close two scores must be. Treated patients with no untreated patient within the caliper are dropped.
+
+```{r}
+#| label: ps-match
+matched <- matchit(treated ~ age + male, data = obs, caliper = 0.05)
+matched_obs <- match.data(matched)
+
+# Treated and untreated patients now have similar age and sex
+aggregate(cbind(age, male) ~ treated, data = matched_obs, FUN = mean)
+```
+
+## The Outcome Model After Matching
+
+The outcome model contains only the treatment.
+
+```{r}
+#| label: ps-outcome
+fit_ps <- lm(sbp ~ treated, data = matched_obs)
+round(cbind(estimate = coef(fit_ps), confint(fit_ps)), 2)
+```
+
+. . .
+
+The estimate is `r fmt(coef(fit_ps)[["treated"]], 1)` mmHg. The true effect is −5, and the unadjusted estimate was `r fmt(coef(fit_ols_naive)[["treated"]], 1)`.
+
+## Friday
+
+- The logic of propensity scores in more detail
+- CohortMethod on OMOP data, using the Eunomia GI bleed example
+- Diagnostics for checking whether a study can be trusted
+- Running the same analysis across a data network with Strategus
 
 ## Questions?

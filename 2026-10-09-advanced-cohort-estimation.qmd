@@ -6,6 +6,141 @@ date: "2026-10-09"
 footer: "BIDS Bootcamp · Advanced Cohort Analysis"
 ---
 
-<!-- Outline to come. -->
+<!--
+OUTLINE (draft). Day 2 has more live demos than Day 1. No student hands-on;
+I run all code.
+Two halves: the logic of propensity scores on simulated data, then
+CohortMethod on real OMOP data (Eunomia GI bleed: celecoxib vs diclofenac).
+-->
+
+# Welcome
+
+## Recap
+
+On Wednesday we fit four regression models to simulated data.
+
+- When a confounder affects both treatment and outcome, a model that ignores it gives a biased estimate.
+- Adding the confounder to the model removes the bias.
+- In OMOP data there can be thousands of potential confounders, so adding each one to the outcome model is impractical.
+
+. . .
+
+Today we look at propensity scores, the approach OHDSI uses for this problem, and then apply it to OMOP data with CohortMethod.
+
+# The Logic of Propensity Scores
+
+## Back to the Randomized Trial
+
+- In a randomized trial, each patient's probability of treatment is known and does not depend on their characteristics.
+- In observational data, that probability depends on the patient's characteristics and is unknown.
+- A **propensity score** estimates this probability from the observed covariates.
+- Comparing treated and untreated patients who have similar propensity scores approximates the comparison a trial would make.
+
+## Estimating the Score
+
+The propensity score is usually estimated with logistic regression.
+
+- The outcome of this model is treatment (1 = treated, 0 = untreated).
+- The predictors are the covariates measured before treatment.
+- Each patient's predicted probability from the model is their propensity score.
+
+. . .
+
+This model predicts treatment. The outcome of the study does not appear in it.
+
+## Matching, Stratification, and Weighting
+
+There are three common ways to use the score.
+
+| Method | What it does |
+|---|---|
+| Matching | Pairs each treated patient with one or more untreated patients who have a similar score. Unmatched patients are dropped. |
+| Stratification | Divides patients into groups (strata) by score and compares treated and untreated patients within each group. |
+| Weighting | Keeps every patient and weights each one by the inverse of their probability of receiving the treatment they received. |
+
+. . .
+
+The methods answer slightly different questions. Matching usually estimates the effect among patients like those who were treated. Weighting can estimate the effect across the whole population.
+
+## Demo: Propensity Scores on Simulated Data
+
+- Simulate data with a known treatment effect and confounding by age and sex.
+- Estimate the propensity score and match with `MatchIt`.
+- Fit the outcome model on the matched data and compare the estimate with the true effect.
+
+## Did It Work? Balance and Overlap
+
+After matching, the treated and untreated groups should have similar covariates.
+
+- The **standardized mean difference (SMD)** measures the difference in a covariate between groups, in standard deviation units. A common rule treats an SMD below 0.1 as balanced.
+- A **Love plot** shows the SMD of every covariate before and after matching.
+- An **overlap plot** shows the distribution of propensity scores in each group. If the distributions do not overlap, some treated patients have no comparable untreated patients.
+
+## Demo: Diagnostics
+
+- Compute the SMDs before and after matching.
+- Draw a Love plot and a propensity score overlap plot for the simulation.
+
+# The Reality of OMOP Data
+
+## The New-User Comparative Cohort Design
+
+OHDSI estimation studies usually compare two treatments among patients who are starting one of them.
+
+- **Target:** new users of celecoxib
+- **Comparator:** new users of diclofenac
+- **Outcome:** GI bleed
+
+. . .
+
+- A **washout period** requires that patients have no prior use of either drug, so that everyone is a new user.
+- The **time at risk** is the window after treatment start in which outcomes are counted.
+- Comparing two active treatments produces groups that are more alike than treated and untreated patients, because both groups have a reason to be treated.
+
+## Thousands of Covariates
+
+- FeatureExtraction turns each patient's conditions, drugs, procedures, and demographics into covariates. This can produce thousands of covariates per patient.
+- CohortMethod fits the propensity score model with **regularized (LASSO) regression**, which can handle this many covariates.
+- The target and comparator drugs themselves must be excluded from the covariates. Otherwise, the model predicts treatment perfectly.
+
+## CohortMethod Step by Step
+
+1. `getDbCohortMethodData()` extracts the cohorts and covariates from the database.
+2. `createStudyPopulation()` applies the washout period and time at risk.
+3. `createPs()` fits the propensity score model.
+4. `matchOnPs()` matches target and comparator patients on the score.
+5. `computeCovariateBalance()` checks balance after matching.
+6. `fitOutcomeModel()` fits a Cox model and returns the hazard ratio.
+
+## Demo: CohortMethod on Eunomia
+
+- Run each step on the Eunomia GI bleed data.
+- Plot the propensity score distribution, covariate balance, and the Kaplan–Meier curves.
+
+## Study Diagnostics
+
+OHDSI studies check a set of diagnostics before reporting results. A result that fails a diagnostic is not reported.
+
+| Diagnostic | What it checks | Threshold |
+|---|---|---|
+| Covariate balance (SDM) | Are the groups comparable after adjustment? | < 0.1 |
+| Equipoise | Do the propensity score distributions overlap? | > 0.2 |
+| MDRR | Is the study large enough to detect an effect? | < 10 |
+| EASE | How much systematic error do the negative controls show? | < 0.25 |
+
+## Negative Controls
+
+A **negative control** is an outcome that we believe neither treatment causes.
+
+- The true hazard ratio for a negative control is 1.
+- If the study finds an effect for many negative controls, the design has systematic error, such as unmeasured confounding.
+- OHDSI studies use negative controls to measure this error and to calibrate the final estimates.
+
+# Running It at Scale
+
+## CohortMethod in Strategus
+
+- `CohortMethodModule` runs the same CohortMethod steps inside a Strategus analysis specification.
+- A single specification can be run by every data partner in a network, and the results are combined afterward.
 
 ## Questions?
