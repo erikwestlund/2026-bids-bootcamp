@@ -129,7 +129,7 @@ On Wednesday we used `MatchIt` to match on a score estimated from age and sex. C
 
 # CohortMethod
 
-## The New-User Comparative Cohort Design
+## The Active Comparator New User Cohort Design
 
 CohortMethod compares two treatments among patients who are starting one of them.
 
@@ -779,7 +779,7 @@ The simulated bleeds recur independently, which is why the analysis can use ever
 
 | Design | Comparison | Package |
 |---|---|---|
-| Comparative cohort | New users of T vs. new users of C | CohortMethod |
+| Active comparator new user cohort | New users of T vs. new users of C | CohortMethod |
 | Self-controlled case series | Exposed vs. unexposed time in cases | SelfControlledCaseSeries |
 | Self-controlled cohort | Time after vs. before exposure, in all exposed patients | SelfControlledCohort |
 
