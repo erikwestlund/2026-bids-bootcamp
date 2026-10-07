@@ -1,6 +1,6 @@
 ---
 title: "REACH and RStudio: PS and Survival Analysis"
-subtitle: "Study designs, outcome models, and running them with Strategus"
+subtitle: "Basics of OHDSI Study Design &amp; Statistical Analysis"
 author: "Erik Westlund"
 date: "2026-10-07"
 footer: "BIDS Bootcamp · REACH and RStudio"
@@ -10,20 +10,6 @@ fig-width: 10
 fig-height: 4.6
 ---
 
-<!--
-Day 1 is concepts plus live walkthroughs. No student hands-on.
-Audience: little background in stats, research design, or the tools.
-This is their first explanation of what these models do.
-
-Teaching pattern, repeated for every model:
-  1. Simulate clean data where we know the true effect.
-  2. Fit the model and read the answer off the output.
-  3. Add confounders (age, sex). The unadjusted model gets it wrong.
-  4. Adjust for the confounders. We get the right answer back.
-
-Unlike the other decks, this one runs its code at render time so the
-simulation output appears on the slides. Requires ggplot2, survival, MatchIt.
--->
 
 ```{r}
 #| label: setup
@@ -31,6 +17,8 @@ simulation output appears on the slides. Requires ggplot2, survival, MatchIt.
 library(ggplot2)
 library(survival)
 library(MatchIt)
+library(dagitty)
+library(ggdag)
 
 theme_set(theme_minimal(base_size = 18))
 
@@ -43,8 +31,8 @@ fmt <- function(x, digits = 2) sub("^-", "\u2212", formatC(x, digits = digits, f
 ## Today's Plan
 
 1. Study design and causal inference
-2. The four regression models used most often in observational research
-3. Confounding, and how adjustment removes it
+2. Common types of research outcomes in OHDSI
+3. Confounding and approaches to addressing it
 4. A preview of propensity scores and CohortMethod
 
 . . .
@@ -53,25 +41,20 @@ On Monday we described cohorts with tables and figures. Today and Friday we move
 
 # Before We Model
 
-## Where This Runs: REACH
-
-- REACH is our deidentified data enclave.
-- Analyses on real patient data run in RStudio inside REACH.
-- Today's examples use simulated data, so everything shown here runs on a laptop.
-
 ## Design Comes First
 
-Aki's lecture covered causal inference. Today we use a few of those ideas.
+Aki's lecture covered the basics of study design and causal inference. In the next sections, we will introduce the basic statistical machinery used in OHDSI to execute OHDSI studies.
 
 Before choosing a model, a study needs answers to three questions:
 
 - What is the research question?
 - Which groups are being compared?
-- What is the outcome, and over what period is it measured?
+- What is the outcome?
+- Over what period of time will it be measured?
 
 . . .
 
-A statistical model cannot correct a flawed design. The design determines what the model is able to estimate.
+A statistical model cannot what is spoiled by design.
 
 ## Why Randomized Trials Work
 
@@ -81,9 +64,43 @@ A statistical model cannot correct a flawed design. The design determines what t
 
 ## Observational Data
 
-In observational data, treatment is not assigned at random. Doctors and patients choose treatments for reasons, and those reasons can also affect the outcome.
+In observational data, treatment is not assigned at random. Doctors and patients choose treatments for various reasons, from the state of evidence to limitations of insurance and the health system.
 
 A **confounder** is a variable that affects both which treatment a person receives and the outcome.
+
+## The Structure of Confounding
+
+A directed acyclic graph (DAG) draws the assumed causal relationships. Each arrow means "affects".
+
+```{r}
+#| label: dag-confounder
+#| echo: false
+#| fig-height: 3.6
+confounding_dag <- dagitty("dag {
+  Confounder -> Treatment
+  Confounder -> Outcome
+  Treatment -> Outcome
+}")
+coordinates(confounding_dag) <- list(
+  x = c(Confounder = 1, Treatment = 0, Outcome = 2),
+  y = c(Confounder = 1, Treatment = 0, Outcome = 0)
+)
+
+ggplot(tidy_dagitty(confounding_dag), aes(x, y, xend = xend, yend = yend)) +
+  geom_dag_edges(
+    edge_colour = "#7E7E7C", edge_width = 0.8,
+    arrow_directed = grid::arrow(length = grid::unit(0.25, "cm"), type = "closed"),
+    # Stop each arrow at the edge of the label instead of its center
+    start_cap = ggraph::rectangle(3.6, 1.3, "cm"),
+    end_cap = ggraph::rectangle(3.6, 1.3, "cm")
+  ) +
+  geom_dag_label(aes(label = name), size = 7, color = "#002D72",
+                 label.padding = unit(0.4, "lines"), linewidth = 0.6) +
+  coord_cartesian(xlim = c(-0.3, 2.3), ylim = c(-0.2, 1.2)) +
+  theme_dag()
+```
+
+The confounder opens a second path from treatment to outcome. Comparing treated and untreated patients without accounting for it mixes the two paths together, biasing the estimated effect size of the treatment
 
 ## Confounding by Age and Sex
 
@@ -130,28 +147,29 @@ ggplot() +
 
 A comparison of treated and untreated patients that ignores age and sex mixes the effect of the treatment with the effects of age and sex.
 
-## Why We Simulate
+# Different Research Outcomes, Different Models
+
+## Four Common Models
+
+The right model depends on the type of outcome being studied.
+
+| Outcome | Example | Model | Treatment effect |
+|---|---|---|---|
+| Continuous | Blood pressure | Linear (OLS) | Difference in mean outcome |
+| Binary | GI bleed | Logistic | Odds ratio |
+| Count or rate | Number of ER visits | Poisson | Rate ratio |
+| Time to event | Time until GI bleed | Cox | Hazard ratio |
+
+## Conditional Effects
+
+Each treatment effect is conditional on the other covariates in the model. It compares treated and untreated patients who have the same values of those covariates. You will often read statements like "all else equal" or "controlling for" to convey how covariates are adjusted.
+
+## Learning With Simulation
 
 - In a simulation, we choose the true effect of the treatment before generating the data.
 - We can then check whether a method recovers that effect.
 - Testing a method on simulated data shows how it behaves before we trust it on real data, where the true effect is unknown.
-
-# The Models
-
-## Four Common Models
-
-The right model depends on the type of outcome.
-
-| Outcome | Example | Model | R function | Treatment effect |
-|---|---|---|---|---|
-| Continuous | Blood pressure | Linear (OLS) | `lm()` | Difference in mean outcome |
-| Binary | GI bleed | Logistic | `glm(family = binomial)` | Odds ratio |
-| Count or rate | Number of ER visits | Poisson | `glm(family = poisson)` | Rate ratio |
-| Time to event | Time until GI bleed | Cox | `coxph()` | Hazard ratio |
-
-## Conditional Effects
-
-Each treatment effect is conditional on the other covariates in the model. It compares treated and untreated patients who have the same values of those covariates.
+- I find this helps build understanding of how confounding actually works.
 
 ## Two Simulated Datasets
 
@@ -248,35 +266,68 @@ Treated patients are older on average, and a larger share of them are men.
 
 ## A Confounded Outcome
 
-Blood pressure rises with age and is higher in men. The treatment effect is still −5.
+Blood pressure rises with age and is higher in men. The treatment effect is still −5. Remember, we simulated the data ourselves, so we know this to be true.
+
+```{r}
+#| label: sim-obs-sbp
+obs$sbp <- 100 + 0.7 * obs$age + 4 * obs$male - 5 * obs$treated +
+  rnorm(n, mean = 0, sd = 10)
+```
+
+## Ignoring Age and Sex
+
+```{r}
+#| label: plot-obs-naive
+#| echo: false
+#| fig-height: 4.4
+ggplot(obs, aes(x = factor(treated), y = sbp)) +
+  geom_jitter(width = 0.2, alpha = 0.08, color = "#68ACE5") +
+  stat_summary(fun = mean, geom = "point", size = 5, color = "#002D72") +
+  scale_x_discrete(labels = c("Untreated", "Treated")) +
+  labs(x = NULL, y = "Systolic blood pressure (mmHg)")
+```
+
+The treated group's mean is *higher*. Taken at face value, the treatment appears to raise blood pressure.
+
+## The Same Data, Broken Out by Age and Sex
+
+```{r}
+#| label: plot-obs-facet
+#| echo: false
+#| fig-height: 4.8
+# Bin age so each panel compares patients of similar age and the same sex
+obs$age_group <- cut(obs$age, breaks = c(-Inf, 50, 60, 70, Inf),
+                     labels = c("Under 50", "50 to 60", "60 to 70", "Over 70"))
+obs$sex <- factor(obs$male, levels = c(0, 1), labels = c("Women", "Men"))
+
+ggplot(obs, aes(x = factor(treated), y = sbp,
+                color = factor(treated), fill = factor(treated))) +
+  geom_jitter(width = 0.2, alpha = 0.08) +
+  stat_summary(fun = mean, geom = "point", size = 4, shape = 21,
+               color = "white", stroke = 1) +
+  facet_grid(sex ~ age_group) +
+  scale_x_discrete(labels = c("Untr.", "Tr.")) +
+  scale_color_manual(values = c("0" = "#7E7E7C", "1" = "#002D72"), guide = "none") +
+  scale_fill_manual(values = c("0" = "#7E7E7C", "1" = "#002D72"), guide = "none") +
+  labs(x = NULL, y = "Systolic blood pressure (mmHg)") +
+  theme(panel.spacing.x = unit(1.2, "lines"))
+```
+
+Within every panel, the treated mean is *lower*. The treated group looks worse overall only because it is older and has more men.
+
+## The Unadjusted Model
+
+Fitting the model with treatment alone reproduces the misleading comparison.
 
 ```{r}
 #| label: fit-ols-naive
-obs$sbp <- 100 + 0.7 * obs$age + 4 * obs$male - 5 * obs$treated +
-  rnorm(n, mean = 0, sd = 10)
-
 fit_ols_naive <- lm(sbp ~ treated, data = obs)
 round(cbind(estimate = coef(fit_ols_naive), confint(fit_ols_naive)), 2)
 ```
 
 . . .
 
-The model estimates an effect of `r fmt(coef(fit_ols_naive)[["treated"]], 1)` mmHg. The treatment appears to raise blood pressure, because treated patients are older and more often men.
-
-## Seeing the Confounding
-
-```{r}
-#| label: plot-obs-sbp
-#| fig-height: 4.4
-ggplot(obs, aes(x = age, y = sbp, color = factor(treated))) +
-  geom_point(alpha = 0.1) +
-  geom_smooth(method = "lm", se = FALSE, linewidth = 1.5) +
-  scale_color_manual(values = c("0" = "#7E7E7C", "1" = "#002D72"),
-                     labels = c("Untreated", "Treated"), name = NULL) +
-  labs(x = "Age", y = "Systolic blood pressure (mmHg)")
-```
-
-At any given age, treated patients have lower blood pressure. The treated group is older, which hides this difference when age is ignored.
+The model estimates an effect of `r fmt(coef(fit_ols_naive)[["treated"]], 1)` mmHg. The true effect is −5.
 
 ## Adjusting for Age and Sex
 
@@ -360,7 +411,7 @@ Poisson regression models counts of events, such as the number of ER visits.
 
 - Patients are followed for different lengths of time. A patient followed for three years has more time to visit the ER than one followed for six months.
 - The model accounts for this with an **offset**: the log of each patient's **person-time**.
-- The model then estimates a **rate**, the same quantity as Monday's incidence rates.
+- The model then estimates a **rate**, which for us is often incidence rates.
 - Exponentiating a coefficient gives a **rate ratio**.
 
 . . .
@@ -421,7 +472,7 @@ After adjustment, the rate ratio is `r fmt(exp(coef(fit_pois_adj)[["treated"]]),
 
 Survival analysis models the time until an event occurs.
 
-- Some patients leave the data before the event can be observed, for example because they change insurance. This is called **censoring**. We know only that they had not had the event by the time they left.
+- Some patients leave the data before the event can be observed, for example because they change insurance, switch systems, or die. This is called **censoring**. We know only that they had not had the event by the time they left.
 - **Kaplan–Meier curves** show the proportion of each group that is still event-free over time.
 - The **Cox model** estimates a **hazard ratio**: the ratio of the event rates in the two groups at any point in time.
 - The Cox model assumes that this ratio is constant over time. This is the **proportional hazards** assumption.
@@ -549,18 +600,108 @@ A **propensity score** is the probability that a patient receives the treatment,
 - Matching treated and untreated patients on the score produces groups that are comparable at baseline, as in a trial.
 - The outcome model can then compare the matched groups directly, without adding the covariates.
 
+## What Are We Estimating?
+
+The **estimand** is the quantity a study sets out to estimate. For a treatment effect, the main question is: the effect *in whom*?
+
+- **ATE**, the average treatment effect: the effect if *everyone* were treated versus no one
+- **ATT**, the average treatment effect in the treated: the effect among patients who actually *received* the treatment
+- **ATC**, the average treatment effect in the controls: the effect among patients who did *not* receive it
+
+. . .
+
+If the treatment works the same for everyone, the three are equal. When the effect differs across patients, and the treated differ from the untreated, they are not.
+
+## Estimands and Propensity Scores
+
+The estimand follows from how the propensity score is used.
+
+- Matching each treated patient to an untreated patient estimates the **ATT**. This is the `matchit()` default.
+- Matching each untreated patient to a treated patient estimates the **ATC** (`estimand = "ATC"`).
+- Weighting the whole sample, or full matching, can estimate the **ATE** (`estimand = "ATE"`).
+
+. . .
+
+A caliper drops treated patients with no close match. The estimate then applies to the treated patients who *could* be matched, which can differ from all treated patients.
+
+## Regression Hides Its Estimand
+
+- An outcome model like `lm(sbp ~ treated + age + male)` returns one coefficient for treatment.
+- If the effect differs across patients, that coefficient is a weighted average of the effect across covariate groups. It gives the most weight to groups where treatment is close to 50/50, which are not the treated, the untreated, or the whole population.
+- This is true even when the model adjusts for every confounder.
+
+. . .
+
+Regression *can* target the ATE or ATT: fit the outcome model, predict each patient's outcome treated and untreated, and average over the chosen population. That step has to be done on purpose. With propensity scores, the choice is part of the design.
+
 ## Matching on the Propensity Score
 
-`matchit()` estimates each patient's propensity score from age and sex. It then pairs each treated patient with the untreated patient whose score is closest. The **caliper** sets how close two scores must be. Treated patients with no untreated patient within the caliper are dropped.
+`matchit()` estimates each patient's propensity score from age and sex. It then pairs each treated patient with the untreated patient whose score is closest, so the estimand is the ATT. The **caliper** sets how close two scores must be. Treated patients with no untreated patient within the caliper are dropped.
 
 ```{r}
 #| label: ps-match
 matched <- matchit(treated ~ age + male, data = obs, caliper = 0.05)
 matched_obs <- match.data(matched)
 
-# Treated and untreated patients now have similar age and sex
+# Patients kept in each group
+table(matched_obs$treated)
+```
+
+## Age and Sex Before Matching
+
+```{r}
+#| label: balance-before
+aggregate(cbind(age, male) ~ treated, data = obs, FUN = mean)
+```
+
+The treated group is older and has more men. `male` is the proportion of men.
+
+## Age and Sex After Matching
+
+```{r}
+#| label: balance-after
 aggregate(cbind(age, male) ~ treated, data = matched_obs, FUN = mean)
 ```
+
+After matching, the two groups have nearly the same average age and share of men.
+
+## Age Distribution Before and After Matching
+
+```{r}
+#| label: balance-plot
+#| echo: false
+#| fig-height: 4.4
+balance <- rbind(
+  data.frame(stage = "Before matching", obs[, c("age", "treated")]),
+  data.frame(stage = "After matching", matched_obs[, c("age", "treated")])
+)
+balance$stage <- factor(balance$stage, levels = c("Before matching", "After matching"))
+balance$group <- factor(balance$treated, levels = c(0, 1), labels = c("Untreated", "Treated"))
+
+ggplot(balance, aes(x = age, color = group, fill = group)) +
+  geom_density(alpha = 0.15, linewidth = 1.2) +
+  facet_wrap(~ stage) +
+  scale_color_manual(values = c(Untreated = "#7E7E7C", Treated = "#002D72"), name = NULL) +
+  scale_fill_manual(values = c(Untreated = "#7E7E7C", Treated = "#002D72"), name = NULL) +
+  labs(x = "Age", y = "Density") +
+  theme(legend.position = "top", axis.text.y = element_blank(),
+        panel.spacing.x = unit(2, "lines"))
+```
+
+Before matching, the treated patients skew older. After matching, the two age distributions nearly overlap.
+
+## The Outcome Model Before Matching
+
+As a reminder, this is the unadjusted model on the full, unmatched data.
+
+```{r}
+#| label: ps-outcome-before
+round(cbind(estimate = coef(fit_ols_naive), confint(fit_ols_naive)), 2)
+```
+
+. . .
+
+The estimate is `r fmt(coef(fit_ols_naive)[["treated"]], 1)` mmHg, far from the true effect of −5.
 
 ## The Outcome Model After Matching
 
@@ -574,7 +715,145 @@ round(cbind(estimate = coef(fit_ps), confint(fit_ps)), 2)
 
 . . .
 
-The estimate is `r fmt(coef(fit_ps)[["treated"]], 1)` mmHg. The true effect is −5, and the unadjusted estimate was `r fmt(coef(fit_ols_naive)[["treated"]], 1)`.
+- The estimate is `r fmt(coef(fit_ps)[["treated"]], 1)` mmHg. The true effect is −5, and the unadjusted estimate was `r fmt(coef(fit_ols_naive)[["treated"]], 1)`.
+- Note that with matching only, and no covariate adjustment, we are able to recover the treatment effect.
+
+## Doubly Robust Estimation
+
+We now have two ways to handle confounding:
+
+- A **propensity score model**, which predicts treatment from the covariates
+- An **outcome model**, which predicts the outcome from treatment and the covariates
+
+Either one gives a biased answer if its model is wrong.
+
+. . .
+
+A **doubly robust** approach uses both. Its estimate stays unbiased if *either* model is correct, so the analysis gets two chances to get it right.
+
+## A Misspecified Propensity Score
+
+Suppose we leave sex out of the propensity score model.
+
+```{r}
+#| label: ps-match-bad
+matched_bad <- matchit(treated ~ age, data = obs, caliper = 0.05)
+matched_bad_obs <- match.data(matched_bad)
+
+aggregate(cbind(age, male) ~ treated, data = matched_bad_obs, FUN = mean)
+```
+
+. . .
+
+Age is balanced, but the treated group still has more men.
+
+## The Outcome Model With the Wrong Score
+
+With only the treatment in the outcome model, the leftover imbalance in sex biases the estimate.
+
+```{r}
+#| label: ps-outcome-bad
+fit_ps_bad <- lm(sbp ~ treated, data = matched_bad_obs)
+round(cbind(estimate = coef(fit_ps_bad), confint(fit_ps_bad)), 2)
+```
+
+. . .
+
+The estimate is `r fmt(coef(fit_ps_bad)[["treated"]], 1)` mmHg. The true effect is −5.
+
+## Matching Plus Covariate Adjustment
+
+Now we keep the same flawed matches, but adjust for age and sex in the outcome model.
+
+```{r}
+#| label: ps-outcome-dr
+fit_dr <- lm(sbp ~ treated + age + male, data = matched_bad_obs)
+round(cbind(estimate = coef(fit_dr), confint(fit_dr)), 2)
+```
+
+. . .
+
+The estimate is `r fmt(coef(fit_dr)[["treated"]], 1)` mmHg. The propensity score model was wrong, but the outcome model was right, so the estimate is still close to −5.
+
+## Many Covariates, Few Patients
+
+- In OMOP data, every condition, drug, procedure, and measurement code can become a covariate. CohortMethod routinely builds tens of thousands of them.
+- Many codes record the same underlying fact. A diagnosis of type 2 diabetes, a metformin prescription, and an HbA1c test all point to diabetes.
+- For a rare exposure or a small database, there can be fewer patients than covariates.
+- Ordinary logistic regression cannot estimate a propensity score in that setting.
+
+## Simulating High-Dimensional Data
+
+500 patients and 1,000 binary codes. Each of 20 underlying conditions is recorded by 50 related codes. Three conditions drive both treatment and blood pressure. The true effect is again −5.
+
+```{r}
+#| label: sim-hd
+set.seed(7)
+n_patients <- 500
+n_conditions <- 20
+codes_per_condition <- 50
+
+condition <- matrix(rbinom(n_patients * n_conditions, size = 1, prob = 0.25), ncol = n_conditions)
+
+# A patient with the condition usually has each related code; others rarely do
+codes <- lapply(seq_len(n_conditions), function(k) {
+  prob <- ifelse(condition[, k] == 1, 0.6, 0.02)
+  matrix(rbinom(n_patients * codes_per_condition, size = 1, prob = prob), ncol = codes_per_condition)
+})
+codes <- do.call(cbind, codes)
+colnames(codes) <- sprintf("code_%04d", seq_len(ncol(codes)))
+
+treated <- rbinom(n_patients, size = 1,
+                  prob = plogis(-1 + 1.5 * condition[, 1] + 1.5 * condition[, 2] - condition[, 3]))
+sbp <- 130 - 5 * treated + 8 * condition[, 1] + 6 * condition[, 2] - 4 * condition[, 3] +
+  rnorm(n_patients, sd = 10)
+
+hd <- data.frame(treated, sbp, codes)
+ps_formula <- reformulate(colnames(codes), response = "treated")
+```
+
+## A Standard Propensity Score Fails
+
+```{r}
+#| label: ps-hd-glm
+fit_ps_glm <- glm(ps_formula, family = binomial, data = hd)
+
+# Coefficients that could not be estimated
+sum(is.na(coef(fit_ps_glm)))
+
+# Estimated propensity scores
+round(range(fitted(fit_ps_glm)), 3)
+```
+
+. . .
+
+With more covariates than patients, the model cannot estimate half its coefficients, and the scores it does produce are pushed to 0 and 1. These scores cannot be used to match patients. `matchit()` fits this same model by default.
+
+## The Lasso
+
+- The **lasso** is logistic regression with a penalty on the size of the coefficients.
+- The penalty shrinks most coefficients to exactly zero. The model keeps only the covariates that help predict treatment.
+- Cross-validation picks how strong the penalty should be.
+- Among a cluster of related codes, the lasso tends to keep a few and drop the rest.
+- CohortMethod fits its propensity scores this way, using a regularized regression package called Cyclops.
+
+## Lasso Propensity Scores in `matchit()`
+
+Setting `distance = "lasso"` fits the propensity score with the lasso. It uses the glmnet package.
+
+```{r}
+#| label: ps-hd-lasso
+matched_hd <- matchit(ps_formula, data = hd, distance = "lasso", caliper = 0.05)
+matched_hd_obs <- match.data(matched_hd)
+table(matched_hd_obs$treated)
+
+fit_hd <- lm(sbp ~ treated, data = matched_hd_obs)
+round(cbind(estimate = coef(fit_hd), confint(fit_hd)), 2)
+```
+
+. . .
+
+The unadjusted estimate is `r fmt(coef(lm(sbp ~ treated, data = hd))[["treated"]], 1)` mmHg. After lasso matching, it is `r fmt(coef(fit_hd)[["treated"]], 1)`. The true effect is −5.
 
 ## Friday
 
