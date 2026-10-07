@@ -8,7 +8,7 @@ Slides and companion notebooks for the BIDS bootcamp talks. Each talk has a slid
 |---|---|---|---|
 | October 5, 2026 | Data Characterization & Visualization | `2026-10-05-characterization-visualization.html` | `characterization-notebook.qmd` ([rendered](characterization-notebook.html)) |
 | October 7, 2026 | REACH and RStudio: PS and Survival Analysis | `2026-10-07-reach-ps-survival.html` | To come |
-| October 9, 2026 | Advanced Cohort Analysis: Estimation | `2026-10-09-advanced-cohort-estimation.html` | To come |
+| October 9, 2026 | Advanced Cohort Analysis: Estimation | `2026-10-09-advanced-cohort-estimation.html` | `simulate-eunomia.R`, `estimation-study.R`, and `evidence-synthesis.R` |
 
 Open the slides and the rendered notebooks in a browser.
 
@@ -24,5 +24,7 @@ The notebooks use [Eunomia](https://github.com/OHDSI/Eunomia), a small synthetic
    ```bash
    quarto render <name>-notebook.qmd
    ```
+
+The October 9 talk uses three R scripts instead of a notebook. `simulate-eunomia.R` makes a copy of Eunomia with simulated drug choices and outcomes, so the true effect is known. `estimation-study.R` runs a Strategus study (CohortMethod and SelfControlledCaseSeries) on that copy, and `evidence-synthesis.R` combines estimates from simulated sites. All three write to `estimation-study/`, which git ignores. Rendering the slides runs the scripts if their results are missing. The Strategus run takes about three minutes.
 
 Each notebook writes its figures to `images/<talk>/`, for example `images/characterization/`. The slides read the figures from there.

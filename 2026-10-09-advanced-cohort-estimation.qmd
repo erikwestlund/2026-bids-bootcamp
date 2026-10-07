@@ -1,146 +1,900 @@
 ---
 title: "Advanced Cohort Analysis: Estimation"
-subtitle: "Propensity scores and study diagnostics"
+subtitle: "CohortMethod, study diagnostics, and network studies"
 author: "Erik Westlund"
 date: "2026-10-09"
 footer: "BIDS Bootcamp · Advanced Cohort Analysis"
+fig-width: 10
+fig-height: 4.6
 ---
 
-<!--
-OUTLINE (draft). Day 2 has more live demos than Day 1. No student hands-on;
-I run all code.
-Two halves: the logic of propensity scores on simulated data, then
-CohortMethod on real OMOP data (Eunomia GI bleed: celecoxib vs diclofenac).
--->
+```{r}
+#| label: setup
+#| include: false
+#| eval: true
+library(ggplot2)
+
+theme_set(theme_minimal(base_size = 18))
+jhu_blue <- "#002D72"
+jhu_gray <- "#7E7E7C"
+
+# Code shown on the slides comes from the two study scripts
+knitr::read_chunk("simulate-eunomia.R")
+knitr::read_chunk("estimation-study.R")
+knitr::read_chunk("evidence-synthesis.R")
+
+# The simulation and Strategus run take a few minutes, so the scripts run only when their
+# results are missing
+if (!file.exists("estimation-study/simulation.rds")) source("simulate-eunomia.R")
+if (!dir.exists("estimation-study/results/CohortMethodModule")) source("estimation-study.R")
+if (!file.exists("estimation-study/evidence-synthesis.rds")) source("evidence-synthesis.R")
+
+read_results <- function(module, table) {
+  read.csv(file.path("estimation-study/results", module, paste0(table, ".csv")))
+}
+
+# Format a number for slide text, with a typographic minus sign
+fmt <- function(x, digits = 2) sub("^-", "−", formatC(x, digits = digits, format = "f"))
+fmt_ci <- function(hr, lower, upper) sprintf("%s (%s to %s)", fmt(hr), fmt(lower), fmt(upper))
+```
+
+```{r}
+#| label: load-results
+#| include: false
+#| eval: true
+gi_bleed <- 3
+
+cm_analyses <- read_results("CohortMethodModule", "cm_analysis")
+cm_results <- read_results("CohortMethodModule", "cm_result")
+cm_results <- cm_results[cm_results$outcome_id == gi_bleed, ]
+cm_diagnostics <- read_results("CohortMethodModule", "cm_diagnostics_summary")
+cm_diagnostics <- cm_diagnostics[cm_diagnostics$outcome_id == gi_bleed, ]
+
+cm_table <- merge(cm_analyses[, c("analysis_id", "description")], cm_results, by = "analysis_id")
+cm_table <- merge(cm_table, cm_diagnostics, by = "analysis_id")
+cm_table <- cm_table[order(cm_table$analysis_id), ]
+short_labels <- c(
+  "1" = "Unadjusted",
+  "2" = "1:1 matching",
+  "3" = "Variable-ratio matching",
+  "4" = "Stratification",
+  "5" = "IPTW",
+  "6" = "1:1 matching + covariates"
+)
+cm_table$label <- short_labels[as.character(cm_table$analysis_id)]
+
+result_for <- function(id) cm_table[cm_table$analysis_id == id, ]
+
+# Negative control estimates for every analysis
+cm_all_results <- read_results("CohortMethodModule", "cm_result")
+cm_negative_controls <- cm_all_results[cm_all_results$outcome_id != gi_bleed & !is.na(cm_all_results$se_log_rr), ]
+
+sccs_results <- read_results("SelfControlledCaseSeriesModule", "sccs_result")
+sccs_sets <- read_results("SelfControlledCaseSeriesModule", "sccs_exposures_outcome_set")
+sccs_covariates <- read_results("SelfControlledCaseSeriesModule", "sccs_covariate")
+sccs_covariate_results <- read_results("SelfControlledCaseSeriesModule", "sccs_covariate_result")
+sccs_diagnostics <- read_results("SelfControlledCaseSeriesModule", "sccs_diagnostics_summary")
+sccs_gi_set <- sccs_sets$exposures_outcome_set_id[sccs_sets$outcome_id == gi_bleed]
+sccs_gi <- sccs_results[sccs_results$exposures_outcome_set_id == sccs_gi_set, ]
+sccs_diag <- sccs_diagnostics[sccs_diagnostics$exposures_outcome_set_id == sccs_gi_set, ]
+sccs_windows <- merge(
+  sccs_covariate_results[sccs_covariate_results$exposures_outcome_set_id == sccs_gi_set, ],
+  unique(sccs_covariates[sccs_covariates$exposures_outcome_set_id == sccs_gi_set, c("covariate_id", "covariate_name")]),
+  by = "covariate_id"
+)
+sccs_window <- function(name) sccs_windows[sccs_windows$covariate_name == name, ]
+
+simulation <- readRDS("estimation-study/simulation.rds")
+true_rr <- simulation$true_rate_ratio
+
+evidence <- readRDS("estimation-study/evidence-synthesis.rds")
+```
 
 # Welcome
 
-## Recap
+## Course Materials
 
-On Wednesday we fit four regression models to simulated data.
+The slides and the code behind every example are available on GitHub at [github.com/erikwestlund/2026-bids-bootcamp](https://github.com/erikwestlund/2026-bids-bootcamp).
 
-- When a confounder affects both treatment and outcome, a model that ignores it gives a biased estimate.
-- Adding the confounder to the model removes the bias.
-- In OMOP data there can be thousands of potential confounders, so adding each one to the outcome model is impractical.
+## Today's Plan
 
-. . .
+1. A brief review of propensity scores
+2. What CohortMethod does, and the settings that control how it uses the propensity score
+3. Study diagnostics, and how to choose which analysis to report
+4. A full CohortMethod study, run with Strategus on simulated data with a known answer
+5. Outcome models, including doubly robust estimation
+6. Self-controlled designs: the same question answered by a self-controlled case series
+7. Combining results across the sites of a network study
 
-Today we look at propensity scores, the approach OHDSI uses for this problem, and then apply it to OMOP data with CohortMethod.
+# Propensity Scores in Brief
 
-# The Logic of Propensity Scores
+## The Propensity Score
 
-## Back to the Randomized Trial
+The **propensity score** is each patient's probability of receiving the target treatment, given their baseline covariates.
 
-- In a randomized trial, each patient's probability of treatment is known and does not depend on their characteristics.
-- In observational data, that probability depends on the patient's characteristics and is unknown.
-- A **propensity score** estimates this probability from the observed covariates.
-- Comparing treated and untreated patients who have similar propensity scores approximates the comparison a trial would make.
-
-## Estimating the Score
-
-The propensity score is usually estimated with logistic regression.
-
-- The outcome of this model is treatment (1 = treated, 0 = untreated).
-- The predictors are the covariates measured before treatment.
-- Each patient's predicted probability from the model is their propensity score.
+- Patients with similar propensity scores have similar distributions of the measured covariates.
+- Comparing patients with similar scores removes confounding by those covariates, much as randomization would.
+- The score does nothing about confounders that were never measured.
 
 . . .
 
-This model predicts treatment. The outcome of the study does not appear in it.
+On Wednesday we used `MatchIt` to match on a score estimated from age and sex. CohortMethod does the same thing with thousands of covariates.
 
-## Matching, Stratification, and Weighting
+## What We Covered on Wednesday
 
-There are three common ways to use the score.
+- The **estimand** depends on how the score is used. Matching treated patients to comparators targets the effect in the treated (ATT). Weighting the whole sample can target the effect in everyone (ATE).
+- A **caliper** drops patients without a close match. The estimate then applies only to the patients who could be matched.
+- **Doubly robust** estimation uses both a propensity score model and an outcome model. The estimate is consistent if either model is correctly specified.
+- The **lasso** fits a propensity score model with thousands of covariates, including when there are more covariates than patients.
 
-| Method | What it does |
-|---|---|
-| Matching | Pairs each treated patient with one or more untreated patients who have a similar score. Unmatched patients are dropped. |
-| Stratification | Divides patients into groups (strata) by score and compares treated and untreated patients within each group. |
-| Weighting | Keeps every patient and weights each one by the inverse of their probability of receiving the treatment they received. |
-
-. . .
-
-The methods answer slightly different questions. Matching usually estimates the effect among patients like those who were treated. Weighting can estimate the effect across the whole population.
-
-## Demo: Propensity Scores on Simulated Data
-
-- Simulate data with a known treatment effect and confounding by age and sex.
-- Estimate the propensity score and match with `MatchIt`.
-- Fit the outcome model on the matched data and compare the estimate with the true effect.
-
-## Did It Work? Balance and Overlap
-
-After matching, the treated and untreated groups should have similar covariates.
-
-- The **standardized mean difference (SMD)** measures the difference in a covariate between groups, in standard deviation units. A common rule treats an SMD below 0.1 as balanced.
-- A **Love plot** shows the SMD of every covariate before and after matching.
-- An **overlap plot** shows the distribution of propensity scores in each group. If the distributions do not overlap, some treated patients have no comparable untreated patients.
-
-## Demo: Diagnostics
-
-- Compute the SMDs before and after matching.
-- Draw a Love plot and a propensity score overlap plot for the simulation.
-
-# The Reality of OMOP Data
+# CohortMethod
 
 ## The New-User Comparative Cohort Design
 
-OHDSI estimation studies usually compare two treatments among patients who are starting one of them.
+CohortMethod compares two treatments among patients who are starting one of them.
 
-- **Target:** new users of celecoxib
-- **Comparator:** new users of diclofenac
-- **Outcome:** GI bleed
+- **Target (T):** new users of celecoxib
+- **Comparator (C):** new users of diclofenac
+- **Outcome (O):** GI bleed
+- **Time at risk:** the window after treatment starts in which outcomes are counted
 
 . . .
 
-- A **washout period** requires that patients have no prior use of either drug, so that everyone is a new user.
-- The **time at risk** is the window after treatment start in which outcomes are counted.
-- Comparing two active treatments produces groups that are more alike than treated and untreated patients, because both groups have a reason to be treated.
+Comparing two active treatments helps with confounding. Both groups had a reason to be treated, so they tend to be more alike than treated and untreated patients.
+
+## What CohortMethod Does
+
+1. Extracts the target and comparator cohorts, their outcomes, and their baseline covariates from the CDM.
+2. Applies the study population rules, such as removing patients who had the outcome before starting treatment.
+3. Fits a propensity score model with a lasso, using every available covariate.
+4. Uses the score to match, stratify, or weight the patients.
+5. Computes covariate balance and the other study diagnostics.
+6. Fits the outcome model and reports a hazard ratio, along with results for the negative control outcomes.
 
 ## Thousands of Covariates
 
-- FeatureExtraction turns each patient's conditions, drugs, procedures, and demographics into covariates. This can produce thousands of covariates per patient.
-- CohortMethod fits the propensity score model with **regularized (LASSO) regression**, which can handle this many covariates.
-- The target and comparator drugs themselves must be excluded from the covariates. Otherwise, the model predicts treatment perfectly.
+- FeatureExtraction builds a covariate for each condition, drug, procedure, measurement, and demographic group in the year before treatment. A real study can have tens of thousands of them.
+- CohortMethod fits the propensity score with Cyclops, a regularized regression package. Cross-validation picks the strength of the lasso penalty.
+- The target and comparator drugs must be excluded from the covariates. A model that can see which drug a patient started predicts treatment perfectly.
 
-## CohortMethod Step by Step
+## Four Ways to Use the Score
 
-1. `getDbCohortMethodData()` extracts the cohorts and covariates from the database.
-2. `createStudyPopulation()` applies the washout period and time at risk.
-3. `createPs()` fits the propensity score model.
-4. `matchOnPs()` matches target and comparator patients on the score.
-5. `computeCovariateBalance()` checks balance after matching.
-6. `fitOutcomeModel()` fits a Cox model and returns the hazard ratio.
-
-## Demo: CohortMethod on Eunomia
-
-- Run each step on the Eunomia GI bleed data.
-- Plot the propensity score distribution, covariate balance, and the Kaplan–Meier curves.
-
-## Study Diagnostics
-
-OHDSI studies check a set of diagnostics before reporting results. A result that fails a diagnostic is not reported.
-
-| Diagnostic | What it checks | Threshold |
+| Method | CohortMethod setting | Population the estimate describes |
 |---|---|---|
-| Covariate balance (SDM) | Are the groups comparable after adjustment? | < 0.1 |
-| Equipoise | Do the propensity score distributions overlap? | > 0.2 |
-| MDRR | Is the study large enough to detect an effect? | < 10 |
-| EASE | How much systematic error do the negative controls show? | < 0.25 |
+| Matching | `createMatchOnPsArgs()` | The matched patients |
+| Stratification | `createStratifyByPsArgs()` | All patients, pooled across strata |
+| Weighting (IPTW) | `createTruncateIptwArgs()` | Set by `estimator`: target, both groups, or the overlap |
 
-## Negative Controls
+. . .
 
-A **negative control** is an outcome that we believe neither treatment causes.
+Each method keeps a different set of patients and weights them differently. When the treatment effect varies across patients, the methods can give different answers that are all correct for their own population.
 
-- The true hazard ratio for a negative control is 1.
-- If the study finds an effect for many negative controls, the design has systematic error, such as unmeasured confounding.
-- OHDSI studies use negative controls to measure this error and to calibrate the final estimates.
+## Matching: 1:1 and Variable Ratio
 
-# Running It at Scale
+`createMatchOnPsArgs()` controls matching.
 
-## CohortMethod in Strategus
+- `maxRatio` sets the largest number of comparator patients matched to each target patient. `maxRatio = 1` gives 1:1 matching. `maxRatio = 10` allows up to ten comparators per target patient. `maxRatio = 0` places no limit.
+- Matching comparators to target patients targets the effect in the target group (ATT), but only if most target patients find a match.
+- More comparators per target patient keeps more data and narrows the confidence interval. Each additional match is a little less similar than the first.
+- With variable-ratio matching, the outcome model should be conditioned on the matched sets (`stratified = TRUE` in `createFitOutcomeModelArgs()`).
 
-- `CohortMethodModule` runs the same CohortMethod steps inside a Strategus analysis specification.
-- A single specification can be run by every data partner in a network, and the results are combined afterward.
+## Matching: n:1
+
+When the target group is much larger than the comparator group, 1:1 matching uses nearly every comparator patient and discards most target patients.
+
+- The matched patients then resemble the comparator group. The estimate describes comparator-like patients, even though CohortMethod labels it ATT.
+- `allowReverseMatch = TRUE` lets CohortMethod match several target patients to each comparator patient, up to `maxRatio`. CohortMethod labels this estimand ATU, the effect in the untreated (comparator) group.
+- In today's simulated data there are fewer celecoxib users than diclofenac users, so analysis 3 matches up to ten diclofenac users to each celecoxib user.
+
+## The Caliper
+
+The **caliper** is the largest difference in propensity score allowed between matched patients. Patients with no match inside the caliper are dropped.
+
+- `caliper = 0.2` is the CohortMethod default. Setting `caliper = 0` turns the caliper off.
+- `caliperScale` sets the units. The default, `"standardized logit"`, measures the caliper in standard deviations of the logit of the propensity score. The other options are `"standardized"` and `"propensity score"`.
+- A narrower caliper produces closer matches and better balance, and it drops more patients.
+
+## Stratification
+
+`createStratifyByPsArgs()` divides patients into groups with similar propensity scores and compares target and comparator patients within each group.
+
+- `numberOfStrata` sets the number of groups. CohortMethod's default is ten. A classic result is that five strata remove about 90% of the bias from a single covariate.
+- `baseSelection` sets which patients define the strata boundaries: `"all"`, `"target"`, or `"comparator"`.
+- The outcome model is stratified by the propensity score strata (`stratified = TRUE`).
+- Stratification keeps nearly every patient. Only strata without outcomes, or with patients from just one group, drop out of the outcome model.
+
+## Weighting
+
+**Inverse probability of treatment weighting (IPTW)** keeps every patient and gives each a weight based on their propensity score.
+
+- `estimator` in `createCreatePsArgs()` sets the estimand: `"att"` (the default), `"ate"`, or `"ato"` for the overlap population.
+- Patients with scores near 0 or 1 receive very large weights, which makes the estimate unstable. `createTruncateIptwArgs(maxWeight = 10)` caps the weights.
+- `createTrimByPsArgs()` can instead remove patients outside a range of scores before weighting.
+- Weighted outcome models use `inversePtWeighting = TRUE`. The usual confidence interval treats the weights as counts of patients. Setting `bootstrapCi = TRUE` gives a valid interval for a weighted model. It still does not account for the uncertainty in estimating the propensity score.
+
+# Study Diagnostics
+
+## Why Diagnostics Come First
+
+A study can produce a confident hazard ratio from a design that cannot answer the question.
+
+- OHDSI studies define a set of **diagnostics** and their thresholds before anyone sees the results.
+- An analysis that fails a diagnostic is not reported as evidence. In the OHDSI results viewer, its estimate stays hidden, or **blinded**.
+- Only analyses with no failed diagnostic are **unblinded**. A diagnostic that cannot be computed does not block unblinding.
+
+## Covariate Balance: The SDM
+
+The **standardized mean difference (SDM)** measures how different the two groups are on one covariate, in standard deviation units:
+
+$$\text{SDM} = \frac{\bar{x}_T - \bar{x}_C}{\sqrt{(s_T^2 + s_C^2)/2}}$$
+
+- An SDM of 0 means the groups have the same mean.
+- The usual rule treats an absolute SDM below **0.1** as balanced.
+- CohortMethod computes the SDM for every covariate, before and after adjustment, and checks the largest one.
+
+## Balance in Practice
+
+- The balance diagnostic fails if *any* covariate has an absolute SDM of 0.1 or more after adjustment. With thousands of covariates, this is a strict test.
+- In a small database, a rare covariate can exceed 0.1 by chance. CohortMethod 6 can instead test whether any SDM exceeds 0.1 by more than chance would explain (`sdmAlpha` in `createCmDiagnosticThresholds()`). The test corrects for every covariate, so in a small study it rarely fails.
+- **Shared balance** is computed once for the whole target and comparator population. **Outcome-specific balance** is computed after outcome-specific steps, such as removing patients with a prior outcome. Both are diagnostics.
+
+## Equipoise
+
+**Equipoise** asks whether the two groups overlap enough to compare.
+
+- The **preference score** is a version of the propensity score that adjusts for the relative size of the two groups. A preference score of 0.5 means the patient's characteristics give no preference for either drug.
+- Equipoise is the share of patients with a preference score between 0.3 and 0.7.
+- The usual threshold requires equipoise of at least **0.2**, meaning at least 20% of patients are in this middle range.
+
+. . .
+
+Low equipoise means prescribers choose between the drugs based on patient characteristics, and few patients could plausibly have received either one.
+
+## MDRR
+
+The **minimum detectable relative risk (MDRR)** is the smallest hazard ratio the study could detect with 80% power at α = 0.05.
+
+- It depends on the number of outcomes and on how the patients split between the two groups. It does not depend on the estimate.
+- An MDRR of 1.5 means the study can detect a 50% increase in risk. An MDRR of 20 means only a very large effect could be detected.
+- CohortMethod's default threshold is an MDRR below **10**.
+
+. . .
+
+A study with a high MDRR is uninformative. A null result from it says almost nothing.
+
+## Negative Controls and EASE
+
+A **negative control** is an outcome that neither treatment causes, so its true hazard ratio is 1.
+
+- The study runs every negative control through the same analysis as the outcome of interest.
+- If many negative controls show an effect, the design has systematic error from unmeasured confounding, selection bias, or measurement error.
+- The **expected absolute systematic error (EASE)** summarizes that error. An EASE of 0 means the negative controls show no systematic error.
+- The usual threshold requires EASE below **0.25**.
+
+. . .
+
+The negative control estimates also **calibrate** the final confidence interval and p-value, so that they account for the systematic error the negative controls revealed.
+
+## Common Cutoffs
+
+| Diagnostic | Question | Passes when |
+|---|---|---|
+| Balance (SDM) | Are the groups comparable? | Max absolute SDM < 0.1 |
+| Equipoise | Do the groups overlap? | ≥ 20% with preference score 0.3–0.7 |
+| MDRR | Is the study large enough? | MDRR < 10 |
+| EASE | Is there systematic error? | EASE < 0.25 |
+
+These are CohortMethod's defaults in `createCmDiagnosticThresholds()`. A protocol can set stricter values. A fifth diagnostic, generalizability, compares the analyzed patients with the population the estimate is meant to describe. It is off by default.
+
+## Choosing Which Analysis to Report
+
+A study usually runs several analyses: different matching ratios, calipers, stratification, and weighting.
+
+1. Discard every analysis that fails a diagnostic.
+2. Among the analyses that pass, choose the primary analysis using criteria set in advance, such as the best balance or the most patients retained.
+3. Report every analysis in the paper or its supplement: the diagnostics for all of them, and the estimates for every analysis that passed, not only the primary one. Analyses that failed stay blinded.
+
+. . .
+
+The protocol must state these criteria before the results are unblinded. Choosing the analysis after seeing the hazard ratios invites selecting the answer one hoped for.
+
+# A Study With a Known Answer
+
+## Why Simulate
+
+Eunomia's GI bleeds all happen within 90 days of starting an NSAID. That is enough for a cohort study, but a self-controlled design needs outcomes at other times too.
+
+- We make a copy of Eunomia and keep its patients, their histories, and their NSAID dates.
+- A script reassigns which drug each patient received and replaces the GI bleeds and the negative control outcomes with simulated ones.
+- Because we wrote the simulation, we know the true effect. We can check whether each design recovers it.
+
+The script is `simulate-eunomia.R`.
+
+## The Question
+
+In the 90 days after starting the drug, how does the rate of GI bleeds on celecoxib compare with the rate on diclofenac?
+
+```{r sim-truth}
+```
+
+- In the simulation, each drug multiplies a patient's bleed rate for 90 days. The true celecoxib vs. diclofenac rate ratio is 1.4 / 2.0 = 0.7.
+- The effect is the same for every patient. Matching, stratification, and weighting therefore all target the same number, and so does a self-controlled design.
+- In real data the effect can differ across patients, and then the designs can describe different populations, as we saw on Wednesday.
+
+## Who Gets Celecoxib
+
+Celecoxib was developed to be gentler on the stomach, so prescribers favor it for patients with a history of ulcers.
+
+```{r sim-treatment}
+```
+
+Older patients and patients with a prior peptic ulcer are more likely to receive celecoxib. Those same patients have a higher bleed rate, which builds in confounding by indication.
+
+## Simulating GI Bleeds
+
+```{r sim-gi-bleeds}
+```
+
+- Bleeds happen throughout follow-up. The background rate is 0.1 per year, three times higher after an ulcer, and 30% higher per decade of age.
+- In the 90 days after the NSAID, the rate is multiplied by the drug's effect.
+
+## Simulating Negative Controls
+
+```{r sim-negative-controls}
+```
+
+The negative controls follow the same kind of background model, so they share the confounders. Neither drug affects them, so their true hazard ratio is 1.
+
+# Running CohortMethod With Strategus
+
+## What Strategus Does
+
+**Strategus** runs a complete OHDSI study from a single analysis specification.
+
+- The specification lists the cohorts and the analysis modules to run, such as CohortGenerator, CohortMethod, and SelfControlledCaseSeries.
+- Each site in a network runs the same specification on its own data and shares only aggregate results.
+- Today we run it on our simulated copy of Eunomia, a small synthetic CDM that runs on a laptop.
+
+. . .
+
+The full study is in `estimation-study.R`. The next slides show it in pieces.
+
+## Cohorts and Negative Controls
+
+```{r cohorts}
+```
+
+## Target, Comparator, and Outcomes
+
+```{r cm-tco}
+```
+
+## Data and Population Settings
+
+```{r cm-shared-args}
+```
+
+## Propensity Score and Balance Settings
+
+```{r cm-ps-args}
+```
+
+## Analyses 1 and 2: Unadjusted and 1:1 Matching
+
+```{r cm-match}
+```
+
+## Analysis 3: Variable-Ratio Matching
+
+```{r cm-nto1}
+```
+
+## Analysis 4: Stratification
+
+```{r cm-stratify}
+```
+
+## Analysis 5: Weighting
+
+```{r cm-iptw}
+```
+
+## Analysis 6: Doubly Robust
+
+This analysis is covered in the outcome models section.
+
+```{r cm-dr}
+```
+
+## Diagnostic Thresholds
+
+```{r cm-module}
+```
+
+## The Analysis Specification
+
+Strategus collects the shared cohort definitions and each module's settings into one specification. The SelfControlledCaseSeries module is covered later.
+
+```{r analysis-spec}
+```
+
+## Connecting to Eunomia
+
+```{r connect}
+```
+
+## Running the Study
+
+```{r execute}
+```
+
+. . .
+
+Strategus writes each module's results as CSV files in `estimation-study/results/`. The slides that follow read those files.
+
+## Who Is in Each Analysis
+
+```{r}
+#| label: show-counts
+#| echo: false
+#| eval: true
+knitr::kable(
+  data.frame(
+    Analysis = cm_table$label,
+    `Celecoxib patients` = cm_table$target_subjects,
+    `Diclofenac patients` = cm_table$comparator_subjects,
+    `Celecoxib GI bleeds` = cm_table$target_outcomes,
+    `Diclofenac GI bleeds` = cm_table$comparator_outcomes,
+    check.names = FALSE
+  ),
+  format.args = list(big.mark = ",")
+)
+```
+
+Patients with a bleed before their NSAID are removed first. 1:1 matching keeps `r format(result_for(2)$target_subjects, big.mark = ",")` patients per group.
+
+## Propensity Score Overlap
+
+```{r}
+#| label: ps-plot
+#| echo: false
+#| eval: true
+#| fig-height: 4.2
+ps_dist <- read_results("CohortMethodModule", "cm_preference_score_dist")
+ps_dist <- ps_dist[ps_dist$analysis_id == 2, ]
+ps_long <- rbind(
+  data.frame(score = ps_dist$preference_score, density = ps_dist$target_density, group = "Celecoxib"),
+  data.frame(score = ps_dist$preference_score, density = ps_dist$comparator_density, group = "Diclofenac")
+)
+
+ggplot(ps_long, aes(score, density, fill = group, color = group)) +
+  annotate("rect", xmin = 0.3, xmax = 0.7, ymin = -Inf, ymax = Inf, alpha = 0.08) +
+  geom_area(position = "identity", alpha = 0.35) +
+  scale_fill_manual(values = c(Celecoxib = jhu_blue, Diclofenac = jhu_gray), name = NULL) +
+  scale_color_manual(values = c(Celecoxib = jhu_blue, Diclofenac = jhu_gray), name = NULL) +
+  labs(x = "Preference score", y = "Density")
+```
+
+Equipoise is `r fmt(result_for(2)$equipoise)`: `r round(100 * result_for(2)$equipoise)`% of patients fall in the shaded range, well above the 0.2 threshold.
+
+## Covariate Balance
+
+```{r}
+#| label: balance-plot
+#| echo: false
+#| eval: true
+#| fig-height: 4.4
+balance <- read_results("CohortMethodModule", "cm_shared_covariate_balance")
+balance <- balance[balance$analysis_id == 2, ]
+max_after <- max(abs(balance$std_diff_after), na.rm = TRUE)
+
+ggplot(balance, aes(abs(std_diff_before), abs(std_diff_after))) +
+  geom_abline(slope = 1, intercept = 0, color = jhu_gray, linetype = "dashed") +
+  geom_hline(yintercept = 0.1, color = "#A51417") +
+  geom_point(alpha = 0.4, color = jhu_blue, size = 2) +
+  labs(x = "Absolute SDM before matching", y = "Absolute SDM after")
+```
+
+Each point is a covariate. After 1:1 matching, the largest absolute SDM is `r fmt(max_after, 3)`.
+
+## Why Balance Fails
+
+```{r}
+#| label: imbalanced
+#| echo: false
+#| eval: true
+covariates <- read_results("CohortMethodModule", "cm_covariate")
+imbalanced <- balance[abs(balance$std_diff_after) >= 0.1, ]
+imbalanced$name <- covariates$covariate_name[match(imbalanced$covariate_id, covariates$covariate_id)]
+```
+
+- `r nrow(imbalanced)` covariates sit at or above the 0.1 line after 1:1 matching: `r knitr::combine_words(imbalanced$name)`.
+- Each is rare, with a mean of `r fmt(max(pmax(imbalanced$target_mean_after, imbalanced$comparator_mean_after)), 2)` or less in both groups. With under 1,000 patients per group, a covariate this rare can exceed 0.1 by chance.
+- Under the 0.1 rule, every adjusted analysis in this study fails the balance diagnostic.
+
+. . .
+
+CohortMethod's `sdmAlpha` test would pass these analyses, but it is lenient at this sample size. Switching to it after seeing the failures would be choosing the rule to fit the result. The rule belongs in the protocol.
+
+## The Diagnostics
+
+```{r}
+#| label: show-diagnostics
+#| echo: false
+#| eval: true
+pass_fail <- function(value, status, digits = 2) {
+  ifelse(is.na(value), "\u2014", paste0(fmt(value, digits), " (", tolower(status), ")"))
+}
+knitr::kable(data.frame(
+  Analysis = cm_table$label,
+  `Max SDM` = pass_fail(cm_table$shared_max_sdm, cm_table$shared_balance_diagnostic),
+  Equipoise = pass_fail(cm_table$equipoise, cm_table$equipoise_diagnostic),
+  MDRR = pass_fail(cm_table$mdrr, cm_table$mdrr_diagnostic),
+  EASE = pass_fail(cm_table$ease, cm_table$ease_diagnostic),
+  check.names = FALSE
+))
+```
+
+Max SDM is the shared balance across all covariates. A dash means the diagnostic was not evaluated.
+
+## What the Diagnostics Mean
+
+- Every adjusted analysis narrowly fails balance, so in a real study all of them would stay blinded.
+- CohortMethod computes EASE only for analyses that pass balance and equipoise, so the adjusted analyses have no EASE.
+- The unadjusted analysis has EASE `r fmt(result_for(1)$ease)`, which fails. Its negative controls show the confounding by ulcer history and age.
+
+. . .
+
+Next we look at the negative controls ourselves, and then at the estimates, to see how each method performed.
+
+## The Negative Controls
+
+```{r}
+#| label: nc-plot
+#| echo: false
+#| eval: true
+#| fig-height: 4.2
+nc_plot_data <- cm_negative_controls[cm_negative_controls$analysis_id %in% c(1, 4), ]
+nc_plot_data$label <- factor(short_labels[as.character(nc_plot_data$analysis_id)], levels = short_labels[c("1", "4")])
+
+nc_ease <- sapply(c(1, 4), function(id) {
+  ncs <- cm_negative_controls[cm_negative_controls$analysis_id == id, ]
+  null <- EmpiricalCalibration::fitMcmcNull(ncs$log_rr, ncs$se_log_rr)
+  EmpiricalCalibration::computeExpectedAbsoluteSystematicError(null)$ease
+})
+
+ggplot(nc_plot_data, aes(rr, factor(outcome_id))) +
+  geom_vline(xintercept = 1, color = "#A51417", linetype = "dashed") +
+  geom_errorbarh(aes(xmin = ci_95_lb, xmax = ci_95_ub), height = 0.2, color = jhu_gray) +
+  geom_point(color = jhu_blue, size = 2.5) +
+  facet_wrap(~label) +
+  scale_x_log10() +
+  labs(x = "Hazard ratio (log scale); each row is a negative control", y = NULL) +
+  theme(axis.text.y = element_blank())
+```
+
+The true hazard ratio for every negative control is 1. EASE is `r fmt(nc_ease[1])` for the unadjusted analysis and `r fmt(nc_ease[2])` after stratification. We computed the second value for teaching, because CohortMethod withholds it.
+
+## The Hazard Ratios
+
+```{r}
+#| label: hr-plot
+#| echo: false
+#| eval: true
+#| fig-height: 4.2
+hr_data <- cm_table[!is.na(cm_table$rr), ]
+hr_data$label <- factor(hr_data$label, levels = rev(cm_table$label))
+
+ggplot(hr_data, aes(rr, label)) +
+  geom_vline(xintercept = 1, color = jhu_gray) +
+  geom_vline(xintercept = true_rr, color = "#A51417", linetype = "dashed") +
+  geom_errorbarh(aes(xmin = ci_95_lb, xmax = ci_95_ub), height = 0.2, color = jhu_blue) +
+  geom_point(size = 3, color = jhu_blue) +
+  scale_x_log10() +
+  labs(x = "Hazard ratio, celecoxib vs. diclofenac (dashed line: truth)", y = NULL)
+```
+
+## Interpreting the Results
+
+None of these estimates would be reported, because every adjusted analysis failed balance. We look at them anyway, because here we know the true value, `r fmt(true_rr, 1)`.
+
+- The unadjusted estimate is `r fmt_ci(result_for(1)$rr, result_for(1)$ci_95_lb, result_for(1)$ci_95_ub)`. Celecoxib went to older patients and patients with ulcers, who bleed more, so the unadjusted comparison makes celecoxib look worse than it is.
+- Stratification gives `r fmt_ci(result_for(4)$rr, result_for(4)$ci_95_lb, result_for(4)$ci_95_ub)`, IPTW gives `r fmt_ci(result_for(5)$rr, result_for(5)$ci_95_lb, result_for(5)$ci_95_ub)`, and variable-ratio matching gives `r fmt_ci(result_for(3)$rr, result_for(3)$ci_95_lb, result_for(3)$ci_95_ub)`.
+- 1:1 matching gives `r fmt_ci(result_for(2)$rr, result_for(2)$ci_95_lb, result_for(2)$ci_95_ub)`. It uses the fewest patients, and its interval is the widest. Every interval includes the truth.
+
+## A Lesson From Building This Study
+
+The first version of this study used FeatureExtraction's default covariates, and the adjusted estimates stayed too high.
+
+- The defaults look back one year before the NSAID. Most of the simulated ulcers were recorded years earlier, so the propensity score model could not see the main confounder.
+- Adding conditions recorded at any time before the NSAID (`useConditionGroupEraAnyTimePrior = TRUE`) fixed it.
+
+. . .
+
+A propensity score can only balance what the covariates record. The lookback windows are a design choice that belongs in the protocol, informed by how the confounders show up in the data.
+
+# Outcome Models
+
+## Outcome Model Types
+
+`createFitOutcomeModelArgs()` sets the outcome model.
+
+| `modelType` | Outcome | Estimate |
+|---|---|---|
+| `"cox"` | Time to the first outcome | Hazard ratio |
+| `"logistic"` | Whether the outcome occurred during the time at risk | Odds ratio |
+| `"poisson"` | Number of outcomes per unit of time at risk | Incidence rate ratio |
+
+. . .
+
+- `stratified = TRUE` conditions the model on the matched sets or strata.
+- `inversePtWeighting = TRUE` fits a weighted model.
+
+## The Usual Outcome Model
+
+By default, the outcome model contains only the treatment.
+
+- The propensity score has already balanced the covariates, so the outcome model does not need them.
+- Because the model has a single term, the analysis is set before the outcome is examined. There is no opportunity to add or drop covariates until the hazard ratio looks right.
+- This is the setting in all but one of today's analyses.
+
+## Doubly Robust Estimation
+
+`useCovariates = TRUE` adds the baseline covariates to the outcome model, alongside the treatment.
+
+- CohortMethod fits this model with a lasso, as it does for the propensity score. The treatment term is never penalized.
+- If the propensity score leaves some imbalance, the outcome model can reduce it. The lasso shrinks the covariate coefficients, so it may not remove all of it.
+- The hazard ratio now compares patients with the same covariate values. That **conditional** hazard ratio can differ from the population-level hazard ratio of the usual model, even when balance is perfect.
+
+## Usual vs. Doubly Robust in the Simulation
+
+```{r}
+#| label: dr-table
+#| echo: false
+#| eval: true
+knitr::kable(data.frame(
+  Analysis = c(result_for(2)$label, result_for(6)$label),
+  `Hazard ratio (95% CI)` = c(
+    fmt_ci(result_for(2)$rr, result_for(2)$ci_95_lb, result_for(2)$ci_95_ub),
+    fmt_ci(result_for(6)$rr, result_for(6)$ci_95_lb, result_for(6)$ci_95_ub)
+  ),
+  check.names = FALSE
+))
+```
+
+The two estimates are nearly identical, so adding the covariates changed little here. In general the two need not match, because the adjusted model estimates a conditional hazard ratio. A large difference is a reason to look again at balance and at which covariates predict the outcome.
+
+# Self-Controlled Designs
+
+## Comparing a Patient With Themself
+
+A cohort study compares different people. A **self-controlled** design compares the same person at different times.
+
+- Each patient serves as their own control.
+- Anything about the patient that does not change over the study period cancels out, whether or not it was measured. Examples include genetics, sex, chronic conditions, and socioeconomic status.
+- Confounders that change over time, such as age, season, or a new illness, still need attention.
+
+## The Self-Controlled Case Series
+
+The **self-controlled case series (SCCS)** uses only patients who had the outcome.
+
+- Each patient's observation time is divided into **exposed** time (for example, the 90 days after starting celecoxib) and **unexposed** time.
+- The model compares the rate of the outcome during exposed time with the rate during unexposed time, within each patient.
+- The result is an **incidence rate ratio**.
+- Age and season enter the model as smooth functions of time, so their effects are not attributed to the exposure.
+
+## When SCCS Fits
+
+SCCS suits an acute outcome after a transient exposure. It relies on several assumptions, and the SelfControlledCaseSeries package checks each one:
+
+- The outcome does not change the chance of later exposure. A **pre-exposure** window tests this.
+- The outcome does not end observation. A patient who dies of a bleed, for example, has no further unexposed time.
+- Repeated outcomes in one patient are independent. When they are not, as with GI bleeds, the analysis uses only each patient's first outcome, and the outcome must then be rare.
+- The outcome rate is stable over calendar time, after adjusting for age and season.
+
+## The Same Question in an SCCS
+
+An SCCS usually compares exposed time with unexposed time. To compare celecoxib with diclofenac, both drugs go into one model with two windows:
+
+- **Either drug, days 0–90**: the rate ratio for the 90 days after starting either drug. In the simulation this is diclofenac's effect, 2.0.
+- **Celecoxib vs. diclofenac, days 0–90**: an extra term that applies only after celecoxib. Its rate ratio is celecoxib's effect divided by diclofenac's, the same quantity as the cohort study's hazard ratio.
+
+. . .
+
+This works because the simulated effect is the same for everyone. If the effect varied across patients, the two designs would weight patients differently and could disagree.
+
+## Both Drugs as Exposures
+
+```{r sccs-exposures}
+```
+
+## SCCS Exposure Windows
+
+```{r sccs-windows}
+```
+
+## The Celecoxib Term
+
+```{r sccs-contrast}
+```
+
+## SCCS in Strategus
+
+```{r sccs-analysis}
+```
+
+## SCCS Results
+
+```{r}
+#| label: sccs-table
+#| echo: false
+#| eval: true
+window_truth <- c(
+  "Pre-exposure" = 1,
+  "Either drug, days 0-90" = simulation$true_effects[["diclofenac"]],
+  "Celecoxib vs. diclofenac, days 0-90" = true_rr
+)
+shown <- sccs_windows[match(names(window_truth), sccs_windows$covariate_name), ]
+knitr::kable(data.frame(
+  Window = names(window_truth),
+  `Rate ratio (95% CI)` = fmt_ci(shown$rr, shown$ci_95_lb, shown$ci_95_ub),
+  `True value` = fmt(unname(window_truth), 1),
+  check.names = FALSE
+), row.names = FALSE)
+```
+
+The analysis uses `r format(sccs_gi$outcome_subjects, big.mark = ",")` cases. Each case contributes their own exposed and unexposed time, so the ulcer history that drove the drug choice cancels out within each patient.
+
+## The Same Question, Two Designs
+
+```{r}
+#| label: two-designs
+#| echo: false
+#| eval: true
+knitr::kable(data.frame(
+  Design = c("Cohort: unadjusted", "Cohort: stratification", "Cohort: IPTW", "Self-controlled case series"),
+  `Celecoxib vs. diclofenac (95% CI)` = c(
+    fmt_ci(result_for(1)$rr, result_for(1)$ci_95_lb, result_for(1)$ci_95_ub),
+    fmt_ci(result_for(4)$rr, result_for(4)$ci_95_lb, result_for(4)$ci_95_ub),
+    fmt_ci(result_for(5)$rr, result_for(5)$ci_95_lb, result_for(5)$ci_95_ub),
+    fmt_ci(sccs_gi$rr, sccs_gi$ci_95_lb, sccs_gi$ci_95_ub)
+  ),
+  check.names = FALSE
+))
+```
+
+The truth is `r fmt(true_rr, 1)`. The cohort study removes the confounding with a propensity score. The SCCS removes it by comparing each patient with themself. Both land near the truth, with different assumptions and different patients.
+
+## SCCS Diagnostics
+
+- Time stability, event–exposure dependence, event–observation dependence, and MDRR all pass.
+- The rare outcome diagnostic `r tolower(sccs_diag$rare_outcome_diagnostic)`s: `r round(100 * as.numeric(sccs_diag$rare_outcome_prevalence))`% of patients have a GI bleed, well above the 10% limit. Our simulation gives everyone a high bleed rate so that the cohort study has enough outcomes.
+- EASE is not computed for an analysis that fails a diagnostic, so this analysis would stay blinded.
+
+. . .
+
+The simulated bleeds recur independently, which is why the analysis can use every bleed. A real GI bleed study would use only the first bleed, and then the outcome must be rare.
+
+## Other Designs in HADES
+
+| Design | Comparison | Package |
+|---|---|---|
+| Comparative cohort | New users of T vs. new users of C | CohortMethod |
+| Self-controlled case series | Exposed vs. unexposed time in cases | SelfControlledCaseSeries |
+| Self-controlled cohort | Time after vs. before exposure, in all exposed patients | SelfControlledCohort |
+
+. . .
+
+Different designs have different weaknesses. A cohort study is vulnerable to unmeasured confounders that differ between patients. An SCCS is vulnerable to anything that changes over time within a patient. When designs that ask the same question agree, the agreement is stronger evidence than either study alone.
+
+# Combining Results Across Sites
+
+## Network Studies
+
+In an OHDSI network study, each site runs the same Strategus specification on its own data.
+
+- Patient-level data never leave the site.
+- Each site shares aggregate results: counts, diagnostics, estimates, and a summary of its likelihood.
+- A coordinating center combines the site results into a single estimate. This step is **evidence synthesis**, a form of meta-analysis.
+- Only sites whose analyses pass the diagnostics enter the synthesis. The MDRR is the exception: a site too small to detect an effect on its own can still contribute to the combined estimate.
+
+## Fixed and Random Effects
+
+- A **fixed-effect** meta-analysis assumes every site estimates the same true effect. Differences between sites are sampling error.
+- A **random-effects** meta-analysis allows the true effect to vary across sites, for example because of different populations or coding practices. It estimates the average effect and the between-site variation, called **tau** (τ).
+- When the sites differ, a random-effects analysis gives a wider and more honest confidence interval.
+
+## The Problem With Small Sites
+
+A traditional meta-analysis combines each site's log hazard ratio and its standard error.
+
+- This assumes each site's likelihood is approximately normal, which fails when a site has few outcomes.
+- If one group at a site has no outcomes, its hazard ratio and standard error are undefined. The site has to be dropped.
+- Dropping sites this way can bias the combined estimate, because the decision to drop a site depends on its outcomes.
+
+## OHDSI's Approach
+
+Each site shares an approximation of its full **likelihood curve** for the treatment effect. CohortMethod writes this to `cm_likelihood_profile.csv`.
+
+- The coordinating center combines the curves directly. The EvidenceSynthesis package does this for fixed effects and for Bayesian random effects.
+- A site with no outcomes in one group still has a likelihood curve, so it still contributes information.
+
+## A Simulated Network
+
+```{r es-simulate}
+```
+
+## The Small Sites
+
+```{r es-simulate-small}
+```
+
+## Fitting Each Site
+
+```{r es-fit-sites}
+```
+
+## Two Ways to Combine
+
+```{r es-traditional}
+```
+
+```{r es-likelihood}
+```
+
+## The Site Estimates
+
+```{r}
+#| label: es-forest
+#| echo: false
+#| eval: true
+#| fig-height: 4.4
+sites <- evidence$site_estimates
+sites$label <- sprintf("Site %d (%s patients, %d outcomes)", sites$site,
+                       format(sites$patients, big.mark = ","), sites$outcomes)
+sites$estimable <- is.finite(sites$seLogRr)
+pooled <- evidence$pooled
+pooled$label <- pooled$method
+
+forest <- rbind(
+  data.frame(label = sites$label[sites$estimable], hr = sites$rr[sites$estimable],
+             lower = sites$ci95Lb[sites$estimable], upper = sites$ci95Ub[sites$estimable],
+             type = "Site"),
+  data.frame(label = pooled$label, hr = pooled$hr, lower = pooled$lower, upper = pooled$upper,
+             type = "Combined")
+)
+forest$label <- factor(forest$label, levels = rev(forest$label))
+
+ggplot(forest, aes(hr, label, color = type)) +
+  geom_vline(xintercept = evidence$true_hr, color = "#A51417", linetype = "dashed") +
+  geom_vline(xintercept = 1, color = jhu_gray) +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.2) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c(Site = jhu_gray, Combined = jhu_blue), guide = "none") +
+  scale_x_log10() +
+  labs(x = "Hazard ratio (log scale); dashed line is the true value", y = NULL) +
+  theme(axis.text.y = element_text(size = 13))
+```
+
+## What the Simulation Shows
+
+- `r sum(!is.finite(evidence$site_estimates$seLogRr))` of the `r nrow(evidence$site_estimates)` sites have no usable estimate, so the traditional meta-analysis drops them. The likelihood-based methods use all `r nrow(evidence$site_estimates)`.
+- In this network, the five large sites hold nearly all the outcomes, so all three methods land close to the true hazard ratio of 2.
+- The likelihood-based approach matters most when many sites are small or the outcome is rare. Then the dropped sites hold a meaningful share of the information, and the normal approximation fails at the sites that remain.
+
+## In Strategus
+
+- `EvidenceSynthesisModule` runs the synthesis on the combined results database after every site has uploaded its results.
+- It offers three methods: a fixed-effect and a random-effects meta-analysis, both using the normal approximation, and a Bayesian random-effects meta-analysis that uses the site likelihood profiles.
+- It includes only the sites that pass the diagnostics and writes combined estimates for each analysis.
+- The OHDSI results viewer shows the site-level and combined estimates side by side.
+
+## Summary
+
+- CohortMethod adjusts for thousands of covariates with a lasso propensity score, then matches, stratifies, or weights.
+- Diagnostics decide which analyses are reported. The diagnostic rules and the criteria for choosing the primary analysis belong in the protocol, and every analysis is reported.
+- Adding the covariates to the outcome model can reduce imbalance left by a flawed propensity score. It changes the estimand to a conditional hazard ratio.
+- Self-controlled designs remove confounding by anything that does not change within a patient. With the right setup, a self-controlled case series answers the same question as the cohort study.
+- Network studies combine site results without sharing patient data. Combining site likelihoods lets small sites contribute.
 
 ## Questions?

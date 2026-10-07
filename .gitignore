@@ -7,3 +7,6 @@
 
 /.quarto/
 **/*.quarto_ipynb
+
+# Strategus output, Eunomia copy, and evidence synthesis results (rebuilt by the scripts)
+estimation-study/
