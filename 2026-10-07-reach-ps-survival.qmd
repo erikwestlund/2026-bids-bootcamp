@@ -28,6 +28,10 @@ fmt <- function(x, digits = 2) sub("^-", "\u2212", formatC(x, digits = digits, f
 
 # Welcome
 
+## Course Materials
+
+The slides and the code behind every example are available on GitHub at [github.com/erikwestlund/2026-bids-bootcamp](https://github.com/erikwestlund/2026-bids-bootcamp).
+
 ## Today's Plan
 
 1. Study design and causal inference
@@ -45,7 +49,7 @@ On Monday we described cohorts with tables and figures. Today and Friday we move
 
 Aki's lecture covered the basics of study design and causal inference. In the next sections, we will introduce the basic statistical machinery used in OHDSI to execute OHDSI studies.
 
-Before choosing a model, a study needs answers to three questions:
+Before choosing a model, a study needs answers to several questions:
 
 - What is the research question?
 - Which groups are being compared?
@@ -54,13 +58,107 @@ Before choosing a model, a study needs answers to three questions:
 
 . . .
 
-A statistical model cannot what is spoiled by design.
+A statistical model cannot fix what is spoiled by design.
+
+## Directed Acyclic Graphs
+
+A directed acyclic graph (DAG) is a picture of the causal relationships we assume. Each box is a variable, and each arrow means "affects". The graph is acyclic because no variable can loop back and cause itself.
+
+- A path from treatment to outcome that follows the arrows forward is the causal effect we want to estimate.
+- A **backdoor path** is any other path that connects treatment and outcome through an arrow pointing *into* treatment. Backdoor paths create associations between treatment and outcome that are not caused by the treatment.
+- A study estimates the causal effect once every backdoor path is blocked, either by design or by adjusting for the right variables.
+
+
+## Further Reading/Viewing on Design, Causal Inference, &amp; DAGs
+
+These are great resources on causal inference, design, and DAGS:
+
+- Morgan, S. L., and Winship, C. (2015). *Counterfactuals and Causal Inference: Methods and Principles for Social Research* (2nd ed.). Cambridge University Press.
+- Pearl, J. (2009). *Causality: Models, Reasoning, and Inference* (2nd ed.). Cambridge University Press.
+- Pearl, J., Glymour, M., and Jewell, N. P. (2016). *Causal Inference in Statistics: A Primer*. Wiley.
+- Richard McElreath's *Statistical Rethinking* course, whose lectures and materials are freely available online at [github.com/rmcelreath](https://github.com/rmcelreath).
+
+## An Example DAG
+
+Suppose we compare celecoxib with a traditional NSAID and measure the risk of a GI bleed. Celecoxib is often chosen for patients with a history of ulcers, and those patients are also more likely to bleed.
+
+```{r}
+#| label: dag-celecoxib
+#| echo: false
+#| fig-height: 3.6
+celecoxib_dag <- dagitty("dag {
+  PriorUlcer -> Celecoxib
+  PriorUlcer -> GIBleed
+  Celecoxib -> GIBleed
+}")
+coordinates(celecoxib_dag) <- list(
+  x = c(PriorUlcer = 1, Celecoxib = 0, GIBleed = 2),
+  y = c(PriorUlcer = 1, Celecoxib = 0, GIBleed = 0)
+)
+dag_labels <- c(PriorUlcer = "Prior ulcer", Celecoxib = "Celecoxib", GIBleed = "GI bleed")
+
+ggplot(tidy_dagitty(celecoxib_dag), aes(x, y, xend = xend, yend = yend)) +
+  geom_dag_edges(
+    edge_colour = "#7E7E7C", edge_width = 0.8,
+    arrow_directed = grid::arrow(length = grid::unit(0.25, "cm"), type = "closed"),
+    # Stop each arrow at the edge of the label instead of its center
+    start_cap = ggraph::rectangle(3.6, 1.3, "cm"),
+    end_cap = ggraph::rectangle(3.6, 1.3, "cm")
+  ) +
+  geom_dag_label(aes(label = dag_labels[name]), size = 7, color = "#002D72",
+                 label.padding = unit(0.4, "lines"), linewidth = 0.6) +
+  coord_cartesian(xlim = c(-0.3, 2.3), ylim = c(-0.2, 1.2)) +
+  theme_dag()
+```
+
+The arrow from celecoxib to GI bleed is the effect we want. The following path is a backdoor path:
+
+::: {style="text-align: center;"}
+celecoxib ← prior ulcer → GI bleed
+:::
+
+Unless we adjust for prior ulcers, it would make celecoxib look more harmful than it is.
+
 
 ## Why Randomized Trials Work
 
 - In a randomized controlled trial, chance alone decides who receives the treatment.
 - As a result, the treated and untreated groups are expected to be the same at baseline in every respect, measured or not.
 - Any systematic difference in outcomes between the groups can therefore be attributed to the treatment.
+
+## The Structure of a Trial
+
+In a trial, randomization is the only cause of treatment. Other causes of the outcome, such as age and sex, have no arrow into treatment.
+
+```{r}
+#| label: dag-trial
+#| echo: false
+#| fig-height: 3.6
+trial_dag <- dagitty("dag {
+  Randomization -> Treatment
+  Treatment -> Outcome
+  OtherCauses -> Outcome
+}")
+coordinates(trial_dag) <- list(
+  x = c(Randomization = 0, Treatment = 0, OtherCauses = 2, Outcome = 2),
+  y = c(Randomization = 1, Treatment = 0, OtherCauses = 1, Outcome = 0)
+)
+
+ggplot(tidy_dagitty(trial_dag), aes(x, y, xend = xend, yend = yend)) +
+  geom_dag_edges(
+    edge_colour = "#7E7E7C", edge_width = 0.8,
+    arrow_directed = grid::arrow(length = grid::unit(0.25, "cm"), type = "closed"),
+    # Stop each arrow at the edge of the label instead of its center
+    start_cap = ggraph::rectangle(3.6, 1.3, "cm"),
+    end_cap = ggraph::rectangle(3.6, 1.3, "cm")
+  ) +
+  geom_dag_label(aes(label = sub("OtherCauses", "Other causes", name)), size = 7,
+                 color = "#002D72", label.padding = unit(0.4, "lines"), linewidth = 0.6) +
+  coord_cartesian(xlim = c(-0.3, 2.3), ylim = c(-0.2, 1.2)) +
+  theme_dag()
+```
+
+Because nothing else points into treatment, the only path from treatment to outcome is the direct one, and a simple comparison of the two groups estimates the treatment effect.
 
 ## Observational Data
 
@@ -70,7 +168,7 @@ A **confounder** is a variable that affects both which treatment a person receiv
 
 ## The Structure of Confounding
 
-A directed acyclic graph (DAG) draws the assumed causal relationships. Each arrow means "affects".
+In observational data, a confounder adds an arrow into treatment.
 
 ```{r}
 #| label: dag-confounder
@@ -100,7 +198,7 @@ ggplot(tidy_dagitty(confounding_dag), aes(x, y, xend = xend, yend = yend)) +
   theme_dag()
 ```
 
-The confounder opens a second path from treatment to outcome. Comparing treated and untreated patients without accounting for it mixes the two paths together, biasing the estimated effect size of the treatment
+The confounder opens a backdoor path from treatment to outcome. Comparing treated and untreated patients without accounting for it mixes the two paths together, biasing the estimated effect size of the treatment.
 
 ## Confounding by Age and Sex
 
@@ -146,6 +244,7 @@ ggplot() +
 ```
 
 A comparison of treated and untreated patients that ignores age and sex mixes the effect of the treatment with the effects of age and sex.
+
 
 # Different Research Outcomes, Different Models
 
@@ -411,7 +510,7 @@ Poisson regression models counts of events, such as the number of ER visits.
 
 - Patients are followed for different lengths of time. A patient followed for three years has more time to visit the ER than one followed for six months.
 - The model accounts for this with an **offset**: the log of each patient's **person-time**.
-- The model then estimates a **rate**, which for us is often incidence rates.
+- The model then estimates a **rate**, which for us is often an incidence rate.
 - Exponentiating a coefficient gives a **rate ratio**.
 
 . . .
@@ -480,6 +579,18 @@ Survival analysis models the time until an event occurs.
 . . .
 
 In the simulation, the treatment doubles the hazard of a GI bleed.
+
+## Data Requirements
+
+Survival analysis needs one row per patient with at least three pieces of information.
+
+- A **time zero**, the date follow-up starts. In OHDSI studies this is usually the cohort start date, when the patient begins treatment.
+- A **follow-up time**, the time from time zero to the event or to the end of follow-up, whichever comes first.
+- An **event indicator**, which is 1 if the event was observed and 0 if the patient was censored.
+
+. . .
+
+To compute these, we need the date of the outcome and the date each patient's follow-up ends, such as the end of their observation period. The Cox model also assumes that censoring is unrelated to the risk of the event once we account for the covariates.
 
 ## Simulating Time to Event
 
@@ -784,7 +895,7 @@ The estimate is `r fmt(coef(fit_dr)[["treated"]], 1)` mmHg. The propensity score
 
 ## Simulating High-Dimensional Data
 
-500 patients and 1,000 binary codes. Each of 20 underlying conditions is recorded by 50 related codes. Three conditions drive both treatment and blood pressure. The true effect is again −5.
+This data set has 500 patients and 1,000 binary codes. Each of 20 underlying conditions is recorded by 50 related codes. Three conditions drive both treatment and blood pressure. The true effect is again −5.
 
 ```{r}
 #| label: sim-hd
