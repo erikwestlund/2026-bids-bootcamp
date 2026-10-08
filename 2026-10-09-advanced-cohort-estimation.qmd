@@ -123,9 +123,9 @@ On Wednesday we used `MatchIt` to match on a score estimated from age and sex. C
 ## What We Covered on Wednesday
 
 - The **estimand** depends on how the score is used. Matching treated patients to comparators targets the effect in the treated (ATT). Weighting the whole sample can target the effect in everyone (ATE).
-- A **caliper** drops patients without a close match. The estimate then applies only to the patients who could be matched.
+- A **caliper** drops patients without a match within a pre-specified tolerance. The estimate then applies only to the patients who could be matched.
 - **Doubly robust** estimation uses both a propensity score model and an outcome model. The estimate is consistent if either model is correctly specified.
-- The **lasso** fits a propensity score model with thousands of covariates, including when there are more covariates than patients.
+- The **lasso** penalizes the propensity score model so that it keeps only the covariates that predict treatment. CohortMethod uses it by default, which lets it fit thousands of covariates, even when there are more covariates than patients.
 
 # CohortMethod
 
@@ -149,7 +149,7 @@ Comparing two active treatments helps with confounding. Both groups had a reason
 3. Fits a propensity score model with a lasso, using every available covariate.
 4. Uses the score to match, stratify, or weight the patients.
 5. Computes covariate balance and the other study diagnostics.
-6. Fits the outcome model and reports a hazard ratio, along with results for the negative control outcomes.
+6. Fits the outcome model for the outcome of interest and each negative control outcome. A Cox model gives a hazard ratio, a Poisson model an incidence rate ratio, and a logistic model an odds ratio.
 
 ## Thousands of Covariates
 
@@ -178,13 +178,39 @@ Each method keeps a different set of patients and weights them differently. When
 - More comparators per target patient keeps more data and narrows the confidence interval. Each additional match is a little less similar than the first.
 - With variable-ratio matching, the outcome model should be conditioned on the matched sets (`stratified = TRUE` in `createFitOutcomeModelArgs()`).
 
+## How Variable-Ratio Matching Works
+
+The ratio is not fixed in advance. CohortMethod matches in rounds:
+
+1. Each target patient is matched to the closest comparator within the caliper. This is 1:1 matching.
+2. Each matched target patient then gets a second comparator, if an unused one is within the caliper.
+3. The rounds continue until `maxRatio` is reached or no close comparators are left.
+
+. . .
+
+- Target patients with many similar comparators get several matches. Those with few get one.
+- Matching is **without replacement**: each patient is used at most once.
+- In today's data, analysis 3 allows up to ten matches, but close comparators run out first. It keeps `r format(result_for(3)$target_subjects, big.mark = ",")` of `r format(result_for(1)$target_subjects, big.mark = ",")` celecoxib users and all `r format(result_for(3)$comparator_subjects, big.mark = ",")` diclofenac users, about `r fmt(result_for(3)$comparator_subjects / result_for(3)$target_subjects, 1)` per celecoxib user.
+
 ## Matching: n:1
 
 When the target group is much larger than the comparator group, 1:1 matching uses nearly every comparator patient and discards most target patients.
 
 - The matched patients then resemble the comparator group. The estimate describes comparator-like patients, even though CohortMethod labels it ATT.
-- `allowReverseMatch = TRUE` lets CohortMethod match several target patients to each comparator patient, up to `maxRatio`. CohortMethod labels this estimand ATU, the effect in the untreated (comparator) group.
-- In today's simulated data there are fewer celecoxib users than diclofenac users, so analysis 3 matches up to ten diclofenac users to each celecoxib user.
+- `allowReverseMatch = TRUE` swaps the roles when the target group is larger. Each comparator patient is matched to up to `maxRatio` target patients, still without replacement. CohortMethod labels this estimand ATU, the effect in the untreated (comparator) group.
+- When the target group is smaller, as celecoxib is today, nothing is swapped and the setting has no effect.
+
+## ATT and ATU With an Active Comparator
+
+In an active comparator design, no one is "untreated". Both groups take a drug, and which one is called the target is a label.
+
+- The ATU for celecoxib vs. diclofenac is the ATT for diclofenac vs. celecoxib, with the hazard ratio inverted.
+- What changes is the **population** the estimate describes. The ATT describes patients like celecoxib users: older, and more often with a prior ulcer. The ATU describes patients like diclofenac users.
+- If the drug effect is the same for everyone, the two agree. If it varies, for example if diclofenac is riskier in older patients, they differ.
+
+. . .
+
+In practice, the group sizes decide this, not the research question. A study reports ATU because the target group was larger, not because anyone wanted the effect in comparator patients. Check which population the matched patients resemble and interpret the estimate for that population.
 
 ## The Caliper
 
@@ -297,6 +323,17 @@ A study usually runs several analyses: different matching ratios, calipers, stra
 . . .
 
 The protocol must state these criteria before the results are unblinded. Choosing the analysis after seeing the hazard ratios invites selecting the answer one hoped for.
+
+## Protocols and Diagnostics in Practice
+
+- **The protocol fixes the rules.** The LEGEND-T2DM protocol states that it will prefer stratification over matching if both balance the groups, because stratification keeps more patients. Matching is the fallback.
+- **Protocols can be stricter than the defaults.** LEGEND-T2DM requires equipoise for a *majority* of patients, not 20%, and every SDM below 0.1.
+- **Diagnostics are reviewed while the estimates are blinded.** Only analyses that pass are interpreted, and only passing databases enter the meta-analysis.
+- **Everything is published.** Results for every comparison are posted in a public results viewer, with their diagnostics.
+
+. . .
+
+The diagnostics remove real bias. Across 11,716 negative control analyses from LEGEND-HTN, only 14% passed every diagnostic. Among those, EASE fell from 0.38 to 0 (Conover et al., *JAMIA* 2025).
 
 # A Study With a Known Answer
 
