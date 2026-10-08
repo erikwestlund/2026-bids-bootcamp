@@ -86,6 +86,12 @@ pooled <- data.frame(
   upper = c(exp(traditional$upper.random), fixed_effect$ub, exp(random_effects$mu95Ub))
 )
 saveRDS(
-  list(site_estimates = site_estimates, pooled = pooled, true_hr = 2),
+  list(
+    site_estimates = site_estimates,
+    pooled = pooled,
+    true_hr = 2,
+    site_grids = site_grids,
+    random_effects = random_effects
+  ),
   "estimation-study/evidence-synthesis.rds"
 )

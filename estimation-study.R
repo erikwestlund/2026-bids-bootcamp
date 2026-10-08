@@ -61,14 +61,10 @@ get_data_args <- CohortMethod::createGetDbCohortMethodDataArgs(
   restrictToCommonPeriod = TRUE,
   covariateSettings = list(
     FeatureExtraction::createDefaultCovariateSettings(addDescendantsToExclude = TRUE),
-    # The defaults look back only one year. A peptic ulcer from years ago
-    # still matters, so also include every condition recorded any time before.
     FeatureExtraction::createCovariateSettings(useConditionGroupEraAnyTimePrior = TRUE)
   )
 )
 
-# Eunomia's drug exposures last a single day, so an on-treatment window would
-# contain no outcomes. Follow everyone for 90 days from the first exposure.
 study_pop_args <- CohortMethod::createCreateStudyPopulationArgs(
   removeSubjectsWithPriorOutcome = TRUE,
   minDaysAtRisk = 1,
@@ -183,6 +179,7 @@ cm_specs <- CohortMethod::createCmAnalysesSpecifications(
     mdrrThreshold = 10,
     easeThreshold = 0.25,
     sdmThreshold = 0.1,
+    sdmAlpha = 0.05,
     equipoiseThreshold = 0.2
   )
 )
