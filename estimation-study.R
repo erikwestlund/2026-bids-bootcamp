@@ -11,18 +11,20 @@
 ## ---- packages
 library(Strategus)
 
+# Without a storage folder, duckdb asks whether to create ~/.duckdb, and
+# RStudio answers that question with the next line of the script
+options(duckdb.home = file.path(tempdir(), "duckdb"))
+
 ## ---- cohorts
-# Celecoxib (1), diclofenac (2), and GI bleed (3) cohorts, plus 14 negative
-# control outcomes. Strategus ships these definitions as test data.
+# Celecoxib (1), diclofenac (2), and GI bleed (3) cohorts, plus 12 negative
+# control outcomes. The definitions are in the cohorts/ folder, copied from
+# the test data that ships with Strategus 1.6.0.
 cohort_definition_set <- CohortGenerator::getCohortDefinitionSet(
-  settingsFileName = "testdata/Cohorts.csv",
-  jsonFolder = "testdata/cohorts",
-  sqlFolder = "testdata/sql",
-  packageName = "Strategus"
+  settingsFileName = "cohorts/Cohorts.csv",
+  jsonFolder = "cohorts/json",
+  sqlFolder = "cohorts/sql"
 )
-negative_control_set <- CohortGenerator::readCsv(
-  system.file("testdata/negative_controls_concept_set.csv", package = "Strategus")
-)
+negative_control_set <- CohortGenerator::readCsv("cohorts/negative_controls_concept_set.csv")
 
 cg_module <- CohortGeneratorModule$new()
 cohort_shared_resource <- cg_module$createCohortSharedResourceSpecifications(

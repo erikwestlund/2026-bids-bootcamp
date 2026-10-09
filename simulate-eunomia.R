@@ -28,6 +28,10 @@ risk_window_days <- 90
 library(DBI)
 set.seed(2026)
 
+# Without a storage folder, duckdb asks whether to create ~/.duckdb, and
+# RStudio answers that question with the next line of the script
+options(duckdb.home = file.path(tempdir(), "duckdb"))
+
 study_folder <- file.path(getwd(), "estimation-study")
 dir.create(study_folder, showWarnings = FALSE)
 database_file <- file.path(study_folder, "eunomia-simulated.duckdb")
@@ -40,7 +44,7 @@ diclofenac_concept_id <- 1124300
 gi_bleed_concept_id <- 192671
 peptic_ulcer_concept_id <- 4027663
 negative_control_concept_ids <- CohortGenerator::readCsv(
-  system.file("testdata/negative_controls_concept_set.csv", package = "Strategus")
+  "cohorts/negative_controls_concept_set.csv"
 )$outcomeConceptId
 
 ## ---- sim-patients
