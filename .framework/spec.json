@@ -1,0 +1,128 @@
+{
+  "spec_version": 1,
+  "name": "2026-bids-bootcamp",
+  "type": "course",
+  "language": "r",
+  "core_files": false,
+  "settings_layout": "flat",
+  "tools": {
+    "quarto": false,
+    "renv": false
+  },
+  "author": {
+    "name": "",
+    "email": "",
+    "affiliation": ""
+  },
+  "directories": {},
+  "extra_directories": {
+    "assets": {
+      "label": "assets",
+      "path": "assets"
+    },
+    "cohorts": {
+      "label": "cohorts",
+      "path": "cohorts"
+    },
+    "estimation_study": {
+      "label": "estimation-study",
+      "path": "estimation-study"
+    },
+    "images": {
+      "label": "images",
+      "path": "images"
+    },
+    "outputs": {
+      "label": "outputs",
+      "path": "outputs"
+    }
+  },
+  "render_dirs": {},
+  "packages": {
+    "use_renv": false,
+    "default_packages": {}
+  },
+  "git": {
+    "use_git": true,
+    "hooks": {
+      "data_security": false
+    },
+    "gitignore_content": ".Rproj.user/\n.Rhistory\n.RData\n.DS_Store\n*_files/\n.quarto/\n\n/.quarto/\n**/*.quarto_ipynb\n\n# Strategus output, Eunomia copy, and evidence synthesis results (rebuilt by the scripts)\nestimation-study/\n\n# Added by framework::adopt()\n**/private/**\n**/*_private/**\n.env\n.env.local\n.env.*.local\n.Renviron\n.httr-oauth\n**/credentials/**\n**/secrets/**\n*.key\n*.pem\n**/cache/**\n**/scratch/**\n**/tmp/**\n**/temp/**\n**/logs/**\nslurm-*.out\n/rendered/\n.Ruserdata\n.Rapp.history\n.Rprofile\nrenv/library/\nrenv/local/\nrenv/cellar/\nrenv/lock/\nrenv/python/\nrenv/sandbox/\nrenv/staging/\nframework.db\nframework.db-wal\nframework.db-shm\n.initiated\n.framework_renv_enabled\n.framework_scaffolded\n_freeze/\n.quarto_backups/\n*_cache/\n__pycache__/\n.ipynb_checkpoints/\n*.pyc\n.pytest_cache/\nvenv/\n.venv/\n.idea/\n.vscode/.history/\n.positron/.history/\n.history/\n.AppleDouble\n.LSOverride\nThumbs.db\nehthumbs.db\n*~\n.aws/\n.config/\n*.tmp\n*.log\n*.bak\n*.swp"
+  },
+  "ai": {
+    "enabled": false,
+    "assistants": {
+      "claude": true
+    },
+    "agents_md": "stub"
+  },
+  "scaffold": {
+    "seed_on_scaffold": false,
+    "seed": "123",
+    "set_theme_on_scaffold": true,
+    "ggplot_theme": "theme_minimal",
+    "source_all_functions": true,
+    "ide": "vscode",
+    "workflow": "quarto"
+  },
+  "quarto": {
+    "html": {
+      "format": "html",
+      "embed_resources": true,
+      "theme": "default",
+      "toc": true,
+      "toc_depth": 3,
+      "code_fold": false,
+      "code_tools": false,
+      "highlight_style": "github"
+    },
+    "revealjs": {
+      "format": "revealjs",
+      "theme": "default",
+      "incremental": false,
+      "slide_number": true,
+      "transition": "slide",
+      "background_transition": "fade",
+      "controls": true,
+      "progress": true,
+      "center": true,
+      "highlight_style": "github"
+    },
+    "render_dir": "rendered/slides"
+  },
+  "connections": {
+    "default_database": "framework",
+    "databases": {
+      "framework": {
+        "driver": "sqlite",
+        "database": "framework.db"
+      }
+    },
+    "storage_buckets": {}
+  },
+  "security": {
+    "sensitive": false
+  },
+  "env": {
+    "POSTGRES_HOST": "",
+    "POSTGRES_PORT": "5432",
+    "POSTGRES_DB": "",
+    "POSTGRES_SCHEMA": "public",
+    "POSTGRES_USER": "",
+    "POSTGRES_PASSWORD": "",
+    "S3_BUCKET": "",
+    "S3_ACCESS_KEY": "",
+    "S3_SECRET_KEY": "",
+    "S3_REGION": "",
+    "S3_ENDPOINT": "",
+    "S3_SESSION_TOKEN": ""
+  },
+  "data_hooks": {},
+  "files": {},
+  "skills": {},
+  "source": {
+    "origin": "r",
+    "adopted": true,
+    "framework_version": "2.0.1"
+  }
+}

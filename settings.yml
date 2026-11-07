@@ -1,0 +1,62 @@
+default:
+  project_name: 2026-bids-bootcamp
+  project_type: course
+  tools:
+    quarto: false
+    renv: false
+  author:
+    name: ''
+    email: ''
+    affiliation: ''
+  directories: {}
+  extra_directories:
+  - key: assets
+    label: assets
+    path: assets
+  - key: cohorts
+    label: cohorts
+    path: cohorts
+  - key: estimation_study
+    label: estimation-study
+    path: estimation-study
+  - key: images
+    label: images
+    path: images
+  - key: outputs
+    label: outputs
+    path: outputs
+  render_dirs: {}
+  quarto: ~
+  packages:
+    use_renv: false
+    default_packages: []
+  git:
+    enabled: true
+    user_name: ''
+    user_email: ''
+    hooks:
+      data_security: false
+  ai:
+    enabled: false
+    canonical_file: AGENTS.md
+    assistants:
+    - claude
+  scaffold:
+    seed_on_scaffold: false
+    seed: '123'
+    set_theme_on_scaffold: true
+    ggplot_theme: theme_minimal
+    notebook_format: quarto
+    workflow: quarto
+    positron: false
+    source_all_functions: true
+  data: []
+  connections:
+    default_database: framework
+    databases:
+      framework:
+        driver: sqlite
+        database: framework.db
+  security:
+    sensitive: false
+  data_hooks: ~
