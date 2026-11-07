@@ -6,7 +6,7 @@
   "core_files": false,
   "settings_layout": "flat",
   "tools": {
-    "quarto": false,
+    "quarto": true,
     "renv": false
   },
   "author": {
@@ -31,10 +31,6 @@
     "images": {
       "label": "images",
       "path": "images"
-    },
-    "outputs": {
-      "label": "outputs",
-      "path": "outputs"
     }
   },
   "render_dirs": {},

@@ -2,12 +2,13 @@ default:
   project_name: 2026-bids-bootcamp
   project_type: course
   tools:
-    quarto: false
+    quarto: true
     renv: false
   author:
-    name: ''
-    email: ''
-    affiliation: ''
+    name: Erik Westlund
+    email: ewestlund@jhu.edu
+    affiliation: Department of Biostatistics, Johns Hopkins Bloomberg School of Public
+      Health
   directories: {}
   extra_directories:
   - key: assets
@@ -22,9 +23,6 @@ default:
   - key: images
     label: images
     path: images
-  - key: outputs
-    label: outputs
-    path: outputs
   render_dirs: {}
   quarto: ~
   packages:
